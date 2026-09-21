@@ -1,9 +1,11 @@
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { BatchWriteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
+import { dispatchAlerts, type VapidKeys } from "../lib/dispatch.ts";
 import { documents, requireTable } from "../lib/dynamo.ts";
 import { fetchForecasts, nearestForecast, type ForecastPoint } from "../lib/forecast.ts";
 import { bounds, cellsCovering, neighbours } from "../lib/geohash.ts";
+import { isNewlyDangerous, type RaisedCell } from "../lib/notify.ts";
 import { PILOT_BBOX, PREFIX_PRECISION, prefixOfCell } from "../lib/pilot.ts";
 import type { DepthLevel } from "../lib/risk.ts";
 import {
@@ -106,6 +108,43 @@ async function loadTuning(): Promise<TuningParameters> {
   } catch (error) {
     console.error("Falling back to built-in tuning", error);
     return fallback;
+  }
+}
+
+/**
+ * VAPID keys for signing push messages.
+ *
+ * The private half is a SecureString, which CloudFormation cannot create, so
+ * both parameters are provisioned out of band and the template only grants
+ * access to them by name. A stack that has never had them provisioned scores
+ * normally and sends nothing, which is the right failure: the map staying
+ * current matters more than the alerts, and a scoring run that threw because
+ * a notification key was missing would leave last hour's numbers on screen
+ * looking current.
+ */
+async function loadVapidKeys(): Promise<VapidKeys | null> {
+  const publicName = process.env["VAPID_PUBLIC_PARAMETER"];
+  const privateName = process.env["VAPID_PRIVATE_PARAMETER"];
+  if (!publicName || !privateName) return null;
+
+  try {
+    const [publicResult, privateResult] = await Promise.all([
+      ssm.send(new GetParameterCommand({ Name: publicName })),
+      ssm.send(new GetParameterCommand({ Name: privateName, WithDecryption: true })),
+    ]);
+
+    const publicKey = publicResult.Parameter?.Value;
+    const privateKey = privateResult.Parameter?.Value;
+    if (!publicKey || !privateKey) return null;
+
+    return {
+      publicKey,
+      privateKey,
+      subject: process.env["VAPID_SUBJECT"] ?? "mailto:accrafloodwatch@example.com",
+    };
+  } catch (error) {
+    console.error("Could not load VAPID keys; alerts will not be sent", error);
+    return null;
   }
 }
 
@@ -245,7 +284,11 @@ function emitMetrics(metrics: Record<string, number>): void {
   );
 }
 
-export const handler = async (): Promise<{ scored: number; forecastAvailable: boolean }> => {
+export const handler = async (): Promise<{
+  scored: number;
+  forecastAvailable: boolean;
+  alertsSent: number;
+}> => {
   const startedAt = Date.now();
   const now = new Date();
 
@@ -264,8 +307,8 @@ export const handler = async (): Promise<{ scored: number; forecastAvailable: bo
   const forecastAvailable = forecastPoints.length > 0;
   const updatedAt = now.toISOString();
 
-  let raisedToHigh = 0;
   let confirmedCells = 0;
+  const raised: RaisedCell[] = [];
   const levelCounts: Record<string, number> = { low: 0, watch: 0, high: 0, confirmed: 0 };
 
   const items = cells.map((cell) => {
@@ -299,11 +342,11 @@ export const handler = async (): Promise<{ scored: number; forecastAvailable: bo
     if (scored.confirmed) confirmedCells += 1;
 
     // A cell that has newly crossed into danger is what a watcher needs to be
-    // told about. Web push does not exist yet, so this is counted and logged
-    // for now; saveWatch will turn the count into a dispatch.
-    const wasHigh = cell.level === "high" || cell.level === "confirmed";
-    const isHigh = scored.level === "high" || scored.level === "confirmed";
-    if (isHigh && !wasHigh) raisedToHigh += 1;
+    // told about. Collected here and dispatched after the writes: the map
+    // being correct comes before anybody being notified about it.
+    if (isNewlyDangerous(cell.level, scored.level)) {
+      raised.push({ cell: cell.cell, level: scored.level, explanation });
+    }
 
     return {
       ...cell,
@@ -336,13 +379,24 @@ export const handler = async (): Promise<{ scored: number; forecastAvailable: bo
 
   const activeReports = [...reportsByCell.values()].reduce((n, list) => n + list.length, 0);
 
+  // Alerts go out only after the map is correct. If dispatch is slow or the
+  // push services are down, the numbers people are looking at are already
+  // written; nothing here can throw, by construction.
+  const watchersTable = process.env["WATCHERS_TABLE"];
+  const dispatched = watchersTable
+    ? await dispatchAlerts(raised, watchersTable, await loadVapidKeys())
+    : { sent: 0, pruned: 0, failed: 0, capped: false };
+
   emitMetrics({
     CellsScored: written,
     ForecastAvailable: forecastAvailable ? 1 : 0,
     ForecastPoints: forecastPoints.length,
     CellsHigh: levelCounts["high"] ?? 0,
     CellsConfirmed: confirmedCells,
-    CellsRaisedToHigh: raisedToHigh,
+    CellsRaisedToHigh: raised.length,
+    AlertsSent: dispatched.sent,
+    AlertsFailed: dispatched.failed,
+    SubscriptionsPruned: dispatched.pruned,
     ActiveReports: activeReports,
     DurationMs: Date.now() - startedAt,
   });
@@ -350,8 +404,10 @@ export const handler = async (): Promise<{ scored: number; forecastAvailable: bo
   console.log(
     "Scored " + written + "/" + cells.length + " cells in " + (Date.now() - startedAt) + "ms. " +
       "Forecast " + (forecastAvailable ? "available" : "UNAVAILABLE") + ". " +
-      "Levels: " + JSON.stringify(levelCounts) + ". Raised to high: " + raisedToHigh + ".",
+      "Levels: " + JSON.stringify(levelCounts) + ". Raised to high: " + raised.length + ". " +
+      "Alerts sent " + dispatched.sent + ", failed " + dispatched.failed +
+      ", pruned " + dispatched.pruned + (dispatched.capped ? " (CAPPED)" : "") + ".",
   );
 
-  return { scored: written, forecastAvailable };
+  return { scored: written, forecastAvailable, alertsSent: dispatched.sent };
 };

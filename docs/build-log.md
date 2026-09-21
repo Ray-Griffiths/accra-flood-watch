@@ -455,3 +455,176 @@ intended lever, and they now genuinely work.
 
 - `saveWatch` and web push, which turns `CellsRaisedToHigh` into an alert.
 - `calculateSafeRoute` with `GeoRoutes.CalculateRoutes` and `Avoid.Areas`.
+
+---
+
+## Day 5 — 2026-09-21 — Terrain view, safe routing, and alerts that actually send
+
+Three things shipped. The first came out of looking honestly at what Day 4 had
+produced; the other two were the last features on the plan's list.
+
+### The problem with a correct map
+
+Day 4 ended with the map going from mostly red to mostly blue, and the log
+entry arguing — correctly — that this was the whole point of the hourly job. On
+a dry day "flooding is likely here" is false, and a map that says it every day
+is a map people learn to ignore before the day it matters.
+
+That reasoning is right and it is also incomplete. A map that reads "Low"
+everywhere is honest and useless. It discards the one thing this project knows
+that nobody else publishes: **which specific streets go under first.** That
+does not change with the weather, and on a dry day it is the only thing worth
+showing.
+
+So the map now answers two questions, and says which one it is answering.
+
+| | Live view | Terrain view |
+|---|---|---|
+| Question | Is this street dangerous now? | Which streets flood when it rains? |
+| Palette | blue → orange → red | purple ramp |
+| Texture | diagonal hatching | horizontal banding |
+| Words | "Flooding likely — avoid if you can" | "Floods first — goes under earliest when it rains hard" |
+
+The two languages are deliberately unrelated. Somebody glancing at the terrain
+view must not come away believing they were warned about right now, so it
+shares no colour, no texture and no verb tense with the warning map.
+
+**The switch follows the weather.** `GET /risk` now returns a `rainOutlook` for
+the viewport (`none` / `light` / `significant`), derived from the rainfall the
+scoring job actually used. `none` selects the terrain view automatically. A
+toggle marked "Right now" / "When it rains" is always available.
+
+Two rules are safety rules and override the user's choice: a `confirmed` cell
+anywhere in view forces the live map, and so does `rainOutlook: significant`.
+Both say so in the banner, and the override consumes the manual choice rather
+than silently reverting to terrain once the rain passes.
+
+A third rule is the one most likely to be got wrong later: **a missing forecast
+is not "no rain".** `rainOutlook` is null when the feed was down, and null keeps
+the live view. Reading a missing number as good news, at the exact moment the
+system knows least, is how this feature would have become dangerous.
+
+`web/src/view.ts` holds the rules as one pure function, tested in both
+directions of every override.
+
+### Safe routing
+
+`POST /api/route` turns active reports and scored cells into `Avoid.Areas` for
+`GeoRoutes.CalculateRoutes`.
+
+The split between what is *avoided* and what is *blocked* is the interesting
+part. A `confirmed` cell, or any cell with a knee-deep-or-worse report, is a
+hard block. A cell merely scored `high` is a soft preference. The difference is
+evidence versus inference: two people saying there is water is reason enough
+not to send somebody down that street; a model saying there might be, every
+time it rains, is how a tool gets uninstalled. Ankle-deep reports do not block
+at all — closing roads on passable water would make the feature useless in
+ordinary Accra rain and teach people the blocks mean nothing.
+
+**`Avoid.Areas` is documented as best effort.** It "may still include
+restricted areas if no feasible alternative route exists". For toll roads that
+is reasonable. For water it is not, because the entire promise of the feature
+is that the returned route does not go through it.
+
+So `lib/geometry.ts` checks the returned geometry against the blocked cells and
+discards any route that crosses one. Segment-against-box by the Liang-Barsky
+slab method rather than sampling points along the line: a straight road
+crossing the corner of a 152m cell passes between samples however finely they
+are spaced, and that hole is exactly the case worth catching.
+
+### Alerts
+
+`POST /api/watch` registers the browser's push subscription against a cell.
+Keyed by cell rather than by user, so a red cell finds everyone who needs
+telling in one query; keying by user would force a scan at exactly the moment
+the system is busiest. The sort key is a SHA-256 of the push endpoint — not a
+security measure, since the endpoint must be stored alongside it to send
+anything, but it keeps the thing that can push to somebody's phone out of log
+lines and metrics.
+
+The endpoint is validated against a host allow-list. Without it, anyone could
+register an arbitrary URL and turn the hourly job into a request generator
+pointed wherever they liked.
+
+Alerts fire on the *crossing* into danger, not on the state. Re-alerting every
+hour while a cell stays `high` is how people turn notifications off, and they
+turn them off before the hour that mattered. The one repeat worth sending is
+`high` → `confirmed`: "flooding is likely" and "people are standing in it" are
+different claims.
+
+VAPID keys are provisioned out of band, because CloudFormation cannot create a
+SecureString. A stack without them scores normally and sends nothing — the
+right failure, since the map staying current matters more than the alerts, and
+a scoring run that threw because a notification key was missing would leave
+last hour's numbers on screen looking current.
+
+### Verified against production
+
+| Check | Result |
+|---|---|
+| `/api/health` | `state: current`, 1,140 cells, forecast available |
+| `rainOutlook` today | `none` (0.3mm/6h, 0.6mm/24h) |
+| Terrain bands | 466 `floods-first`, 175 `floods-heavy`, 499 `usually-dry` |
+| Live levels today | 1,075 `low`, 65 `watch`, 0 `high` |
+| Terrain view auto-selects | yes — "No rain forecast. Showing which streets flood when it rains." |
+| Toggle back to live | yes — legend and palette swap, no refetch |
+| Walking route, nothing in the way | 5,122 m, 87 min |
+| Driving route, nothing in the way | 6,164 m, 11 min |
+| Walking route, 3 cells blocked | 6,186 m, 105 min — "goes around 3 places where people are reporting water. That is about 18 minutes more walking." |
+| Report planted at the destination | service returned a route; **the geometry check rejected it**; answer was `found: false`, no geometry, "Do not walk this route." |
+| `POST /watch` | registers and cancels; rejects an unknown push host and a point outside the pilot area |
+| Alert dispatch | cell raised `watch` → `confirmed` → watcher found → VAPID loaded → **FCM accepted the message**, `AlertsSent: 1` |
+| Subscription pruning | FCM returned 404 for a retired token; the row was **deleted**, `SubscriptionsPruned: 1` |
+| Alert de-duplication | second run with the cell still `confirmed` → `CellsRaisedToHigh: 0`, nothing sent |
+
+### Three bugs the verification caught
+
+**1. A due-east route through a flooded cell read as clear.** The Liang-Barsky
+parallel-segment branch tested `distance <= 0` where it needed `distance >= 0`.
+Any route running exactly along a line of latitude — on a street grid, a great
+many of them — skipped the check entirely. Caught by the first test written for
+the function, before it ever ran against the service.
+
+**2. Every route reported "0 m, 0 minutes".** `Route.Summary` comes back empty
+from `CalculateRoutes` in `eu-west-1`, for both Pedestrian and Car. The totals
+live in `Legs[].{Pedestrian,Vehicle}LegDetails.Summary.Overview` and must be
+summed. Nothing in the types suggests this; only calling it does.
+
+**3. The action bar covered the disclaimer.** A second button made the label
+wrap to three lines, and the new view toggle pushed the page 86px past the
+viewport so it began to scroll. The fixed bar then floated over "not an
+official warning service" — the one sentence on this page that is never allowed
+to be obscured, and which `styles.css` already carried a comment about.
+
+The fix is worth recording because the obvious one is wrong. The map's
+`min-height` was forcing the overflow, and lowering it does **not** shrink the
+map, because `flex: 1` still hands the map everything the other bands do not
+use. It went from 55vh to 38vh and the map still renders at 412px of an 844px
+screen. A `min-height` on a flex child is a floor for short screens; it has to
+stay below what flex would give, or it silently becomes a scrollbar.
+
+### Honest state
+
+- **Push is verified as far as the push service, not as far as a phone.** A real
+  Chrome subscription was registered against a real cell, and when that cell
+  crossed into `confirmed` the scoring job composed, signed and sent the
+  message, and **FCM accepted it** (`AlertsSent: 1`). What has not been
+  observed is the last hop: a notification actually appearing on a handset.
+  That needs a device and was not done. Everything up to the handover is
+  exercised in production, including pruning a retired subscription on a 404
+  and suppressing a repeat while a cell stays dangerous.
+- The 8 historical flood points remain **unverified** and still override the
+  terrain model in their cells.
+- There is no place search. A destination is chosen by tapping the map, which
+  is faster than typing and works when you do not know the junction's name.
+  `GeoPlaces` would be a second endpoint and is not needed for the pilot.
+- The soft/hard avoidance split has not been tuned against a real storm. It is
+  a judgement, documented in `lib/routing.ts`, not a measurement.
+- All test reports and watchers created during verification were deleted, and
+  the grid was rescored to baseline afterwards. Both tables are empty.
+
+### Counts
+
+- 160 backend tests (up from 69), 13 frontend tests (new), 0 failures.
+- 6 Lambda functions, 3 DynamoDB tables, 1 hourly schedule, 2 alarms.
+- Evidence: `docs/evidence/day5-terrain-view.png`, `docs/evidence/day5-now-view.png`.

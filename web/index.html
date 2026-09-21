@@ -37,14 +37,53 @@
           </noscript>
         </div>
 
+        <!-- What the map is answering, and the choice to ask the other
+             question. The sentence comes first: a toggle whose two states are
+             not explained is a toggle people leave alone. -->
+        <div class="view-bar">
+          <p id="view-reason" class="view-bar__reason" role="status" aria-live="polite"></p>
+          <div class="view-toggle" role="group" aria-label="What the map shows">
+            <button
+              type="button"
+              class="view-toggle__option"
+              data-view="now"
+              aria-pressed="true"
+            >
+              Right now
+            </button>
+            <button
+              type="button"
+              class="view-toggle__option"
+              data-view="terrain"
+              aria-pressed="false"
+            >
+              When it rains
+            </button>
+          </div>
+        </div>
+
         <section id="legend" class="legend" aria-label="What the colours and patterns mean"></section>
+
+        <!-- Shown only while a destination is being chosen. It replaces the
+             instruction that would otherwise have to live in a sheet covering
+             the map the user is trying to tap. -->
+        <div id="route-prompt" class="route-prompt" role="status" aria-live="polite" hidden>
+          <p class="route-prompt__text">Tap where you are going.</p>
+          <button type="button" id="route-cancel" class="route-prompt__cancel">Cancel</button>
+        </div>
 
         <!-- Fixed, thumb-reachable, and the largest target on the screen.
              It is pressed one-handed, in the rain, under time pressure. -->
-        <button id="report-button" type="button" class="report-button">
-          <span class="report-button__icon" aria-hidden="true">＋</span>
-          <span class="report-button__label">Report water here</span>
-        </button>
+        <div class="actions">
+          <button id="route-button" type="button" class="route-button">
+            <span class="route-button__icon" aria-hidden="true">➔</span>
+            <span>Safe route</span>
+          </button>
+          <button id="report-button" type="button" class="report-button">
+            <span class="report-button__icon" aria-hidden="true">＋</span>
+            <span class="report-button__label">Report water</span>
+          </button>
+        </div>
       </main>
 
       <footer class="disclaimer">
@@ -58,6 +97,13 @@
     </div>
 
     <div id="detail-sheet" class="sheet" role="dialog" aria-modal="false" aria-label="Flood risk detail" hidden>
+      <div class="sheet__panel">
+        <button type="button" class="sheet__close" aria-label="Close">Close</button>
+        <div class="sheet__body"></div>
+      </div>
+    </div>
+
+    <div id="route-sheet" class="sheet" role="dialog" aria-modal="true" aria-label="Safe route" hidden>
       <div class="sheet__panel">
         <button type="button" class="sheet__close" aria-label="Close">Close</button>
         <div class="sheet__body"></div>

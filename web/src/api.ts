@@ -22,6 +22,12 @@ export interface ClientConfig {
     key: string;
     style: string;
   };
+  /**
+   * Public VAPID key, or null when push is not provisioned on this stack.
+   * Null means the watch control is not offered at all, rather than offered
+   * and failing after the user has granted a permission.
+   */
+  pushPublicKey: string | null;
 }
 
 export interface RiskCell {
@@ -35,13 +41,28 @@ export interface RiskCell {
   hand: number;
   historicalFloodPoint?: string;
   updatedAt?: string;
+  /** How this ground behaves in rain. A permanent property, not a warning. */
+  terrainBand?: string;
+  terrainExplanation?: string;
 }
+
+/**
+ * Is rain coming at all?
+ *
+ * Separate from the score, which cannot express it: a 3mm day and a 0mm day
+ * both land at `low`, but only one of them is a day on which the warning map
+ * has anything to say.
+ */
+export type RainOutlook = "none" | "light" | "significant";
 
 export interface RiskResponse {
   cells: RiskCell[];
   cellCount?: number;
   basis?: string;
   forecastAvailable?: boolean;
+  /** Null when the forecast feed was down. Never read null as "no rain". */
+  rainOutlook?: RainOutlook | null;
+  rainfall?: { next6hMm: number; next24hMm: number } | null;
   generatedAt?: string;
   outsidePilotArea?: boolean;
   message?: string;
@@ -130,6 +151,71 @@ export function fetchRisk(bbox: [number, number, number, number]): Promise<RiskR
 
 export function fetchReports(bbox: [number, number, number, number]): Promise<ReportsResponse> {
   return request<ReportsResponse>(`/api/reports?bbox=${bbox.join(",")}`);
+}
+
+export interface WatchResult {
+  watching: boolean;
+  cell: string;
+  message: string;
+}
+
+/**
+ * Register or cancel an alert for a place.
+ *
+ * The subscription is the browser's own opaque push registration. Nothing
+ * about the person goes with it.
+ */
+export function saveWatch(
+  latitude: number,
+  longitude: number,
+  subscription: { endpoint: string; keys: { p256dh: string; auth: string } },
+  action: "watch" | "unwatch",
+): Promise<WatchResult> {
+  return request<WatchResult>("/api/watch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action, latitude, longitude, subscription }),
+  });
+}
+
+export type TravelMode = "walking" | "driving";
+
+/**
+ * A route request answered. `found: false` is a successful answer, not an
+ * error: "every way through is flooded" is the most important thing this
+ * endpoint can say, and it says it with a 200.
+ */
+export interface RouteFound {
+  found: true;
+  mode: TravelMode;
+  geometry: { type: "LineString"; coordinates: Array<[number, number]> };
+  distanceMetres: number;
+  durationSeconds: number;
+  avoided: { blocked: number; likely: number; hazardsInArea: number };
+  detour: { extraSeconds: number; extraMetres: number } | null;
+  explanation: string;
+}
+
+export interface RouteNotFound {
+  found: false;
+  mode: TravelMode;
+  reason: "flooded" | "no-route";
+  blockedCells?: number;
+  explanation: string;
+}
+
+export type RouteResponse = RouteFound | RouteNotFound;
+
+export function calculateRoute(
+  origin: [number, number],
+  destination: [number, number],
+  mode: TravelMode,
+): Promise<RouteResponse> {
+  return request<RouteResponse>("/api/route", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ origin, destination, mode }),
+  });
 }
 
 export function submitReport(

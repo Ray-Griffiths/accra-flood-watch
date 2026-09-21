@@ -61,6 +61,21 @@ The plan describes the legacy resource model (create a `Map`, a `PlaceIndex`, a
 `CalculateRoutes` accepts `Avoid.Areas` directly, which is exactly the mechanism the
 safe-routing feature needs. Verified available in `eu-west-1`.
 
+Two things about `CalculateRoutes` that cost a debugging cycle each:
+
+- **`Avoid.Areas` is best effort.** The API documents that it "may still include
+  restricted areas if no feasible alternative route exists". For toll roads that is a
+  sane default; for water people are standing in it is not. `lib/geometry.ts` therefore
+  checks the returned geometry against the blocked cells itself and discards a route
+  that crosses one. That check — not the parameter — is what makes "never route through
+  a confirmed cell" true. Verified in production: a report planted at the destination
+  produced a route from the service, which the check rejected.
+- **`Route.Summary` comes back empty in `eu-west-1`,** for both Pedestrian and Car.
+  Distance and duration must be summed from
+  `Legs[].{Pedestrian,Vehicle}LegDetails.Summary.Overview`. Trusting `Route.Summary`
+  produces a route cheerfully reported as "0 m, 0 minutes", which is what shipped for
+  about ten minutes before a live call caught it.
+
 ### 2. No Docker locally
 
 `sam build` must not rely on `--use-container`. Keep all Lambda dependencies pure-JS.
@@ -107,11 +122,11 @@ EventBridge Scheduler --hourly--> scoreRisk Lambda → forecast API + DynamoDB
 
 | Function | Trigger | Responsibility |
 |---|---|---|
-| `getRisk` | `GET /risk?bbox=` | Bounds → geohash prefixes → risk cells. The dominant read. |
+| `getRisk` | `GET /risk?bbox=` | Bounds → geohash prefixes → risk cells. Returns both readings per cell (live level **and** terrain band) plus the viewport's `rainOutlook`. The dominant read. |
 | `getReports` | `GET /reports?bbox=` | Active reports with age + severity. Never returns an identifier. |
 | `submitReport` | `POST /reports` | Validate, confirm inside pilot boundary, derive cell, write with TTL, recompute live risk component, notify watchers if a threshold is crossed. |
-| `saveWatch` | `POST /watch` | Register a web push subscription against a cell. |
-| `calculateSafeRoute` | `POST /route` | Active reports → avoidance areas → `GeoRoutes.CalculateRoutes` → route + explanation. |
+| `saveWatch` | `POST /watch` | Register or cancel a web push subscription against a cell. Write-only on `Watchers` — it cannot read them back. |
+| `calculateSafeRoute` | `POST /route` | Active reports → avoidance areas → `GeoRoutes.CalculateRoutes` → route + explanation, with the returned geometry verified against the blocked cells. |
 | `scoreRisk` | EventBridge, hourly | Fetch forecasts, recompute every cell, batch-write, dispatch alerts for newly raised cells. |
 
 Plus `GET /health` — liveness and last scoring run time. Monitored through judging.
@@ -146,6 +161,28 @@ three hours sets it regardless of computed score. Reality outranks the model.
 
 Thresholds live in **SSM Parameter Store**, not in code, so they can be tuned during a
 live demo without redeploying.
+
+### The map answers two questions
+
+Risk levels answer *"is this street dangerous now"*. On a dry day — most days — the
+honest answer is no, everywhere, and the warning map goes uniformly quiet. That is
+correct and it is also useless, because it discards the one thing this project knows
+that nobody else publishes: which specific streets go under first.
+
+So every cell carries a **terrain band** (`floods-first` / `floods-heavy` /
+`usually-dry`) alongside its live level, and the map switches between them:
+
+- `rainOutlook: none` → terrain view, automatically.
+- Anything else, or no forecast at all → live view. **A missing forecast is never read
+  as "no rain";** switching to terrain on a null would be inventing good news.
+- A `confirmed` cell in view, or `rainOutlook: significant`, **forces** the live view and
+  overrides a manual choice, saying so in the banner.
+
+The two views use deliberately different languages — purple vs the blue-orange-red
+ramp, horizontal banding vs diagonal hatching, verbs about the ground vs verbs about
+today. Someone glancing at the terrain view must not come away thinking they were
+warned about right now. `web/src/view.ts` owns the rules and is tested in both
+directions.
 
 ---
 
@@ -201,6 +238,12 @@ under time pressure.
 - Risk levels differ by **shape and label as well as colour** — glare and colour-blindness.
 - Service worker caches the shell and last risk data, labelled with when it was updated.
 - Risk overlay loads **before** map tiles. It carries the information that matters.
+- **The whole screen fits without scrolling on a 390×844 phone.** The map is sized by
+  `flex: 1`, so it takes whatever the other bands leave; its `min-height` is only a
+  floor for short screens and **must stay below** what the flex calculation would give,
+  or the page starts scrolling and the fixed action bar floats over the disclaimer.
+  Adding a band above the legend means re-checking that floor — this has already bitten
+  once, when the view toggle pushed the layout 86px over.
 - Text is short, concrete, free of meteorological jargon.
 - **Every risk level explains itself in plain language.** This is a functional requirement:
   a number a user cannot interrogate is a number they will not trust, and an untrusted
@@ -229,6 +272,16 @@ has no business estimating flood risk.
 sam build
 sam deploy --region eu-west-1          # --guided on first run
 sam logs -n scoreRisk --tail
+
+# VAPID keys for web push. CloudFormation cannot create a SecureString, so these
+# are provisioned once, out of band, and the template only grants access by name.
+# A stack without them scores normally and sends nothing -- which is the right
+# failure, since the map staying current matters more than the alerts.
+node -e "console.log(JSON.stringify(require('web-push').generateVAPIDKeys()))"
+aws ssm put-parameter --region eu-west-1 --type String       --overwrite \
+  --name /accra-flood-watch/vapid/public  --value "<publicKey>"
+aws ssm put-parameter --region eu-west-1 --type SecureString --overwrite \
+  --name /accra-flood-watch/vapid/private --value "<privateKey>"
 
 # Frontend
 npm run dev                             # Vite dev server

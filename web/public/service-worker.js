@@ -17,7 +17,9 @@
  *           is where tile caching belongs.
  */
 
-const SHELL_CACHE = "afw-shell-v2";
+// Bumped whenever the shell's markup changes: activate deletes every cache
+// that is not this one, which is what evicts the previous index.html.
+const SHELL_CACHE = "afw-shell-v3";
 const SHELL_ASSETS = ["/", "/index.html", "/manifest.webmanifest", "/icons/icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -37,6 +39,64 @@ self.addEventListener("activate", (event) => {
         Promise.all(keys.filter((key) => key !== SHELL_CACHE).map((key) => caches.delete(key))),
       )
       .then(() => self.clients.claim()),
+  );
+});
+
+/*
+ * Push alerts for watched places.
+ *
+ * The payload is composed on the server so the wording cannot drift between a
+ * notification, the map and a route explanation. This file only presents it,
+ * and falls back to a generic message rather than showing nothing if the
+ * payload is missing or unparseable — Chrome requires a notification for every
+ * push received under userVisibleOnly, and a silent drop would be a message
+ * the user never learns was sent.
+ */
+self.addEventListener("push", (event) => {
+  let alert = {
+    title: "Flooding alert",
+    body: "A place you watch may be flooding. Open Accra Flood Watch to see.",
+    cell: "",
+  };
+
+  try {
+    if (event.data) alert = { ...alert, ...event.data.json() };
+  } catch {
+    /* Keep the fallback. */
+  }
+
+  event.waitUntil(
+    self.registration.showNotification(alert.title, {
+      body: alert.body,
+      icon: "/icons/icon.svg",
+      badge: "/icons/icon.svg",
+      // Collapses repeats for the same place rather than stacking them: three
+      // notifications about one street is how notifications get turned off.
+      tag: alert.cell ? `afw-${alert.cell}` : "afw",
+      renotify: true,
+      requireInteraction: false,
+      data: { cell: alert.cell },
+    }),
+  );
+});
+
+/*
+ * Tapping the alert brings the app to whatever tab is already open rather than
+ * opening a second one — somebody reacting to a flood warning should not have
+ * to find which of three tabs is the live map.
+ */
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if (new URL(client.url).origin === self.location.origin && "focus" in client) {
+          return client.focus();
+        }
+      }
+      return self.clients.openWindow("/");
+    }),
   );
 });
 

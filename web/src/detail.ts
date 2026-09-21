@@ -8,7 +8,7 @@
  * that is not trusted is a warning that is ignored.
  */
 
-import { levelStyle } from "./levels.ts";
+import { levelStyle, terrainStyle, type MapView } from "./levels.ts";
 
 export interface CellDetail {
   cell: string;
@@ -17,18 +17,41 @@ export interface CellDetail {
   basis: string;
   explanation: string;
   hand: number;
+  susceptibility: number;
   historicalFloodPoint?: string;
   updatedAt?: string;
+  /** How this ground behaves in rain, independent of today's weather. */
+  terrainBand?: string;
+  terrainExplanation?: string;
+  /**
+   * Which question the map is currently answering. The sheet has to answer
+   * the same one: opening a terrain cell and being shown today's risk score
+   * is how a user concludes the map is lying to them.
+   */
+  view: MapView;
+  /** Middle of the cell, for anything that needs a coordinate. */
+  centre: [number, number];
   /** Reports standing in this cell right now, newest first. */
   reports: Array<{ depthLabel: string; ageLabel: string }>;
 }
+
+/**
+ * Renders the "alert me about this place" control, or nothing when push is
+ * unavailable. Injected rather than built in, so this file stays about
+ * presenting a cell and the permission dance lives with the rest of the
+ * push code.
+ */
+export type WatchSectionRenderer = (detail: CellDetail) => HTMLElement | null;
 
 export class DetailSheet {
   private readonly root: HTMLElement;
   private readonly body: HTMLElement;
   private readonly closeButton: HTMLButtonElement;
 
-  constructor(root: HTMLElement) {
+  constructor(
+    root: HTMLElement,
+    private readonly renderWatch?: WatchSectionRenderer,
+  ) {
     this.root = root;
     this.body = root.querySelector<HTMLElement>(".sheet__body")!;
     this.closeButton = root.querySelector<HTMLButtonElement>(".sheet__close")!;
@@ -44,13 +67,20 @@ export class DetailSheet {
   }
 
   show(detail: CellDetail): void {
-    const style = levelStyle(detail.level);
+    const terrain = detail.view === "terrain";
+    const style = terrain ? terrainStyle(detail.terrainBand ?? "") : levelStyle(detail.level);
 
     this.body.replaceChildren(
-      this.heading(style.label, style.colour, detail.score),
+      terrain
+        ? this.heading(style.label, style.colour, detail.susceptibility, "Terrain score")
+        : this.heading(style.label, style.colour, detail.score, "Risk score"),
       this.explanation(detail),
+      // Reports are observations of the world, not model output, so they are
+      // shown in both views. Somebody standing in water is worth knowing about
+      // whichever question was being asked.
       ...(detail.reports.length > 0 ? [this.reports(detail)] : []),
       this.provenance(detail),
+      ...compact([this.renderWatch?.(detail) ?? null]),
     );
 
     this.root.hidden = false;
@@ -59,7 +89,7 @@ export class DetailSheet {
     this.closeButton.focus();
   }
 
-  private heading(label: string, colour: string, score: number): HTMLElement {
+  private heading(label: string, colour: string, score: number, term: string): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "sheet__heading";
 
@@ -70,7 +100,7 @@ export class DetailSheet {
 
     const scoreEl = document.createElement("span");
     scoreEl.className = "sheet__score";
-    scoreEl.textContent = `Risk score ${Math.round(score)} of 100`;
+    scoreEl.textContent = `${term} ${Math.round(score)} of 100`;
 
     wrap.append(badge, scoreEl);
     return wrap;
@@ -81,7 +111,11 @@ export class DetailSheet {
     p.className = "sheet__explanation";
     // Server-authored sentence. The server owns the wording so the phrasing
     // cannot drift between the map, a push alert and a route explanation.
-    p.textContent = capitalise(detail.explanation);
+    const text =
+      detail.view === "terrain" && detail.terrainExplanation
+        ? detail.terrainExplanation
+        : detail.explanation;
+    p.textContent = capitalise(text);
     return p;
   }
 
@@ -115,10 +149,17 @@ export class DetailSheet {
     const dl = document.createElement("dl");
     dl.className = "sheet__provenance";
 
-    const rows: Array<[string, string]> = [
-      ["Based on", basisLabel(detail.basis)],
-      ["Height above nearest drain", `${detail.hand.toFixed(1)} m`],
-    ];
+    const rows: Array<[string, string]> =
+      detail.view === "terrain"
+        ? [
+            // No "based on" row: the terrain view has exactly one source and
+            // saying so every time adds words without adding information.
+            ["Height above nearest drain", `${detail.hand.toFixed(1)} m`],
+          ]
+        : [
+            ["Based on", basisLabel(detail.basis)],
+            ["Height above nearest drain", `${detail.hand.toFixed(1)} m`],
+          ];
 
     if (detail.historicalFloodPoint) {
       rows.push(["Recorded flooding", detail.historicalFloodPoint]);
@@ -146,6 +187,10 @@ function basisLabel(basis: string): string {
     default:
       return "Terrain only — no rainfall forecast yet";
   }
+}
+
+function compact(nodes: Array<HTMLElement | null>): HTMLElement[] {
+  return nodes.filter((node): node is HTMLElement => node !== null);
 }
 
 function capitalise(text: string): string {

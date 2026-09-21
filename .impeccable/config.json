@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "web/src/styles.css"
+        ],
+        "createdAt": "2026-09-21T19:12:49.239Z",
+        "reason": "Project spec (CLAUDE.md, 'Risk levels differ by shape and label as well as colour'): .depth-choice widens its left edge with severity as a non-colour cue for colour-blind users and direct sunlight. Documented in the CSS comment above the rule; predates this session. The decorative .callout side bar flagged by this rule has been removed instead."
+      }
+    ]
+  }
+}

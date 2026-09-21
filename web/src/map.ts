@@ -25,11 +25,13 @@ import {
 import type { FeatureCollection } from "geojson";
 
 import type { FloodReport, RiskCell } from "./api.ts";
-import { matchByLevel } from "./levels.ts";
+import { matchByView, type MapView } from "./levels.ts";
 import { registerRiskPatterns } from "./patterns.ts";
 
 const RISK_SOURCE = "risk-cells";
 const REPORTS_SOURCE = "flood-reports";
+const ROUTE_SOURCE = "safe-route";
+const ROUTE_POINTS_SOURCE = "route-points";
 
 export const RISK_LAYERS = {
   fill: "risk-fill",
@@ -43,10 +45,23 @@ const FONT_BOLD = ["Amazon Ember Bold", "Noto Sans Bold"];
 
 type Bbox = [number, number, number, number];
 
+/** A calculated route, ready to draw. */
+export interface DrawnRoute {
+  coordinates: Array<[number, number]>;
+  origin: [number, number];
+  destination: [number, number];
+}
+
 export interface MapHandles {
   map: MapLibreMap;
   setRisk(cells: RiskCell[]): void;
   setReports(reports: FloodReport[]): void;
+  /** Repaint the overlay in the other vocabulary. Data is not re-fetched. */
+  setView(view: MapView): void;
+  /** Draw a route, or clear it with null. */
+  setRoute(route: DrawnRoute | null): void;
+  /** Frame a route so both ends are on screen at once. */
+  frameRoute(route: DrawnRoute): void;
   viewportBbox(): Bbox;
 }
 
@@ -134,6 +149,12 @@ export function installOverlays(map: MapLibreMap): MapHandles {
   if (!map.getSource(REPORTS_SOURCE)) {
     map.addSource(REPORTS_SOURCE, { type: "geojson", data: emptyCollection() });
   }
+  if (!map.getSource(ROUTE_SOURCE)) {
+    map.addSource(ROUTE_SOURCE, { type: "geojson", data: emptyCollection() });
+  }
+  if (!map.getSource(ROUTE_POINTS_SOURCE)) {
+    map.addSource(ROUTE_POINTS_SOURCE, { type: "geojson", data: emptyCollection() });
+  }
 
   const beforeId = firstSymbolLayerId(map);
 
@@ -144,8 +165,8 @@ export function installOverlays(map: MapLibreMap): MapHandles {
         type: "fill",
         source: RISK_SOURCE,
         paint: {
-          "fill-color": matchByLevel((s) => s.colour, "#2b83ba") as never,
-          "fill-opacity": matchByLevel((s) => s.opacity, 0.25) as never,
+          "fill-color": matchByView("now", (s) => s.colour, "#2b83ba") as never,
+          "fill-opacity": matchByView("now", (s) => s.opacity, 0.25) as never,
         },
       },
       beforeId,
@@ -161,7 +182,7 @@ export function installOverlays(map: MapLibreMap): MapHandles {
         type: "fill",
         source: RISK_SOURCE,
         paint: {
-          "fill-pattern": matchByLevel((s) => s.pattern, "risk-dots") as never,
+          "fill-pattern": matchByView("now", (s) => s.pattern, "risk-dots") as never,
           "fill-opacity": 0.55,
         },
       },
@@ -176,8 +197,8 @@ export function installOverlays(map: MapLibreMap): MapHandles {
         type: "line",
         source: RISK_SOURCE,
         paint: {
-          "line-color": matchByLevel((s) => s.colour, "#2b83ba") as never,
-          "line-width": matchByLevel((s) => s.outlineWidth, 0.5) as never,
+          "line-color": matchByView("now", (s) => s.colour, "#2b83ba") as never,
+          "line-width": matchByView("now", (s) => s.outlineWidth, 0.5) as never,
           "line-opacity": 0.9,
         },
       },
@@ -195,7 +216,7 @@ export function installOverlays(map: MapLibreMap): MapHandles {
       // Only once cells are big enough for the word to fit inside one.
       minzoom: 15.5,
       layout: {
-        "text-field": ["get", "levelLabel"],
+        "text-field": ["get", "nowLabel"],
         "text-font": FONT_BOLD,
         "text-size": 11,
         "text-allow-overlap": false,
@@ -209,8 +230,46 @@ export function installOverlays(map: MapLibreMap): MapHandles {
     });
   }
 
-  // Reports sit above everything, including labels. They are the most
-  // current thing on the map and outrank the model.
+  // The route sits above the risk overlay -- it is the answer to a question
+  // the user just asked, and it has to be followable across cells of every
+  // colour. A white casing under the line keeps it legible over a dark red
+  // fill as well as over a pale one.
+  if (!map.getLayer("route-casing")) {
+    map.addLayer({
+      id: "route-casing",
+      type: "line",
+      source: ROUTE_SOURCE,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#ffffff", "line-width": 10, "line-opacity": 0.95 },
+    });
+  }
+
+  if (!map.getLayer("route-line")) {
+    map.addLayer({
+      id: "route-line",
+      type: "line",
+      source: ROUTE_SOURCE,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#0b3d5c", "line-width": 5 },
+    });
+  }
+
+  if (!map.getLayer("route-endpoints")) {
+    map.addLayer({
+      id: "route-endpoints",
+      type: "circle",
+      source: ROUTE_POINTS_SOURCE,
+      paint: {
+        "circle-radius": 8,
+        "circle-color": ["match", ["get", "role"], "destination", "#0b3d5c", "#ffffff"],
+        "circle-stroke-color": "#0b3d5c",
+        "circle-stroke-width": 3,
+      },
+    });
+  }
+
+  // Reports sit above everything, including labels and the route. They are the
+  // most current thing on the map and outrank the model.
   if (!map.getLayer("reports-halo")) {
     map.addLayer({
       id: "reports-halo",
@@ -270,11 +329,76 @@ export function installOverlays(map: MapLibreMap): MapHandles {
     map,
     setRisk: (cells) => setData(RISK_SOURCE, riskCollection(cells)),
     setReports: (reports) => setData(REPORTS_SOURCE, reportCollection(reports)),
+    setView: (view) => applyView(map, view),
+    setRoute: (route) => {
+      setData(ROUTE_SOURCE, route ? routeCollection(route) : emptyCollection());
+      setData(ROUTE_POINTS_SOURCE, route ? routePointCollection(route) : emptyCollection());
+    },
+    frameRoute: (route) => {
+      const lons = route.coordinates.map(([lon]) => lon);
+      const lats = route.coordinates.map(([, lat]) => lat);
+      map.fitBounds(
+        [
+          [Math.min(...lons), Math.min(...lats)],
+          [Math.max(...lons), Math.max(...lats)],
+        ],
+        // Generous bottom padding: the fixed report button and the result
+        // sheet both live down there, and a route that ends underneath them
+        // has not been shown.
+        { padding: { top: 60, right: 40, bottom: 220, left: 40 }, duration: 600 },
+      );
+    },
     viewportBbox: () => {
       const b = map.getBounds();
       return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     },
   };
+}
+
+/**
+ * Repaint the overlay in the other vocabulary.
+ *
+ * Both readings already ride on every feature, so this is a paint change and
+ * nothing more — no refetch, no source swap, no second set of layers. That is
+ * the reason the switch can be instant on a phone with a bad connection, which
+ * is the only condition under which it matters.
+ */
+function applyView(map: MapLibreMap, view: MapView): void {
+  if (!map.getLayer(RISK_LAYERS.fill)) return;
+
+  map.setPaintProperty(
+    RISK_LAYERS.fill,
+    "fill-color",
+    matchByView(view, (s) => s.colour, "#2b83ba") as never,
+  );
+  map.setPaintProperty(
+    RISK_LAYERS.fill,
+    "fill-opacity",
+    matchByView(view, (s) => s.opacity, 0.25) as never,
+  );
+  map.setPaintProperty(
+    RISK_LAYERS.pattern,
+    "fill-pattern",
+    matchByView(view, (s) => s.pattern, "risk-dots") as never,
+  );
+  map.setPaintProperty(
+    RISK_LAYERS.outline,
+    "line-color",
+    matchByView(view, (s) => s.colour, "#2b83ba") as never,
+  );
+  map.setPaintProperty(
+    RISK_LAYERS.outline,
+    "line-width",
+    matchByView(view, (s) => s.outlineWidth, 0.5) as never,
+  );
+  map.setLayoutProperty(RISK_LAYERS.label, "text-field", [
+    "get",
+    view === "terrain" ? "terrainLabel" : "nowLabel",
+  ] as never);
+
+  // Reports are observations, not model output. They stay visible in both
+  // views: somebody standing in water is the most current thing on this map
+  // whichever question the user is asking of it.
 }
 
 function riskCollection(cells: RiskCell[]): FeatureCollection {
@@ -296,11 +420,16 @@ function riskCollection(cells: RiskCell[]): FeatureCollection {
       },
       properties: {
         cell: cell.cell,
+        // Both readings ride on every feature so the view can be switched
+        // without a second request.
         level: cell.level,
-        levelLabel: levelWord(cell.level),
+        nowLabel: levelWord(cell.level),
+        terrainBand: cell.terrainBand ?? "",
+        terrainLabel: terrainWord(cell.terrainBand),
         score: cell.score,
         basis: cell.basis,
         explanation: cell.explanation,
+        terrainExplanation: cell.terrainExplanation ?? "",
         hand: cell.hand,
         susceptibility: cell.susceptibility,
         historicalFloodPoint: cell.historicalFloodPoint ?? "",
@@ -322,6 +451,56 @@ function levelWord(level: string): string {
     default:
       return "LOW";
   }
+}
+
+/**
+ * The terrain word shown inside a cell.
+ *
+ * Phrased about the ground rather than about today, so a screenshot of the
+ * terrain view can never be mistaken for a warning that was issued.
+ */
+function terrainWord(band: string | undefined): string {
+  switch (band) {
+    case "floods-first":
+      return "FLOODS FIRST";
+    case "floods-heavy":
+      return "HEAVY RAIN";
+    case "usually-dry":
+      return "USUALLY DRY";
+    default:
+      return "";
+  }
+}
+
+function routeCollection(route: DrawnRoute): FeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        geometry: { type: "LineString", coordinates: route.coordinates },
+        properties: {},
+      },
+    ],
+  };
+}
+
+function routePointCollection(route: DrawnRoute): FeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        geometry: { type: "Point", coordinates: route.origin },
+        properties: { role: "origin" },
+      },
+      {
+        type: "Feature",
+        geometry: { type: "Point", coordinates: route.destination },
+        properties: { role: "destination" },
+      },
+    ],
+  };
 }
 
 function reportCollection(reports: FloodReport[]): FeatureCollection {

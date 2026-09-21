@@ -1,14 +1,50 @@
 ﻿import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { DescribeKeyCommand, LocationClient } from "@aws-sdk/client-location";
+import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 
 import { json } from "../lib/http.ts";
 import { PILOT_BBOX, CELL_PRECISION } from "../lib/pilot.ts";
 
 const location = new LocationClient({});
+const ssm = new SSMClient({});
 
 // Resolved once per execution environment. DescribeKey is a control-plane call
 // and the key does not change between invocations.
 let cachedKey: string | undefined;
+let cachedVapidKey: string | null | undefined;
+
+/**
+ * The public half of the VAPID pair, so the browser can subscribe to push.
+ *
+ * Public by definition: it is handed to every visitor and is useless without
+ * the private half, which this function has no permission to read.
+ *
+ * Cached, unlike the scoring thresholds. A key that changes is a key rotation,
+ * which invalidates every existing subscription anyway and is not something
+ * done mid-demo; the argument for re-reading the tunables every run does not
+ * apply here. `null` is cached too, so a stack without push configured does
+ * not make an SSM call on every page load.
+ */
+async function resolveVapidKey(): Promise<string | null> {
+  if (cachedVapidKey !== undefined) return cachedVapidKey;
+
+  const name = process.env["VAPID_PUBLIC_PARAMETER"];
+  if (!name) {
+    cachedVapidKey = null;
+    return null;
+  }
+
+  try {
+    const result = await ssm.send(new GetParameterCommand({ Name: name }));
+    cachedVapidKey = result.Parameter?.Value ?? null;
+  } catch {
+    // Push not provisioned on this stack. The rest of the app is unaffected,
+    // and the client hides the watch control rather than offering one that
+    // cannot work.
+    cachedVapidKey = null;
+  }
+  return cachedVapidKey;
+}
 
 async function resolveMapKey(): Promise<string> {
   if (cachedKey) return cachedKey;
@@ -34,12 +70,16 @@ async function resolveMapKey(): Promise<string> {
  * driven up by anyone who reads the page source.
  */
 export const handler: APIGatewayProxyHandlerV2 = async () => {
-  const mapKey = await resolveMapKey();
+  const [mapKey, vapidPublicKey] = await Promise.all([resolveMapKey(), resolveVapidKey()]);
   const style = process.env.MAP_STYLE ?? "Standard";
 
   return json(
     200,
     {
+      // Null when push is not provisioned. The client uses this to decide
+      // whether to offer a control at all, rather than offering one that
+      // fails after the user has already granted a permission.
+      pushPublicKey: vapidPublicKey,
       pilotArea: {
         name: "Circle, Kaneshie and Avenor",
         bbox: [PILOT_BBOX.west, PILOT_BBOX.south, PILOT_BBOX.east, PILOT_BBOX.north],

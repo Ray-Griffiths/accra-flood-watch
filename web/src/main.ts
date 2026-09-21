@@ -19,10 +19,19 @@ import {
   type RiskResponse,
 } from "./api.ts";
 import { describeAge, loadRisk, storeRisk } from "./cache.ts";
-import { DetailSheet } from "./detail.ts";
-import { LEVEL_STYLES, RISK_LEVELS } from "./levels.ts";
+import { DetailSheet, type CellDetail } from "./detail.ts";
+import { stylesForView, type MapView } from "./levels.ts";
 import { createMap, installOverlays, RISK_LAYERS, type MapHandles } from "./map.ts";
 import { ReportFlow } from "./reporting.ts";
+import { RouteFlow, type RouteState } from "./route-flow.ts";
+import { decideView, hasConfirmedCell } from "./view.ts";
+import {
+  checkSupport,
+  rememberWatch,
+  unwatchPlace,
+  watchPlace,
+  watchedCells,
+} from "./watch.ts";
 
 type Bbox = [number, number, number, number];
 
@@ -30,9 +39,16 @@ const elements = {
   map: document.querySelector<HTMLElement>("#map")!,
   status: document.querySelector<HTMLElement>("#status")!,
   legend: document.querySelector<HTMLElement>("#legend")!,
+  viewBar: document.querySelector<HTMLElement>(".view-bar")!,
+  viewReason: document.querySelector<HTMLElement>("#view-reason")!,
+  viewOptions: document.querySelectorAll<HTMLButtonElement>(".view-toggle__option"),
   reportButton: document.querySelector<HTMLButtonElement>("#report-button")!,
+  routeButton: document.querySelector<HTMLButtonElement>("#route-button")!,
+  routePrompt: document.querySelector<HTMLElement>("#route-prompt")!,
+  routeCancel: document.querySelector<HTMLButtonElement>("#route-cancel")!,
   detailSheet: document.querySelector<HTMLElement>("#detail-sheet")!,
   reportSheet: document.querySelector<HTMLElement>("#report-sheet")!,
+  routeSheet: document.querySelector<HTMLElement>("#route-sheet")!,
 };
 
 let handles: MapHandles | null = null;
@@ -40,27 +56,50 @@ let currentReports: FloodReport[] = [];
 let currentCells: RiskCell[] = [];
 let refreshTimer: number | undefined;
 
+/** What the user last chose, if anything. Null means "follow the weather". */
+let manualView: MapView | null = null;
+let activeView: MapView = "now";
+/** The newest risk response, so the toggle re-decides against current weather. */
+let lastRisk: RiskResponse | null = null;
+
 function setStatus(text: string, state: "ok" | "warn" | "error" | "pending"): void {
   elements.status.textContent = text;
   elements.status.className = `status status--${state}`;
 }
 
 /**
- * The legend states every level three ways — swatch, texture and word — so it
- * is readable under glare and without colour vision.
+ * Reflect the routing state in the chrome around the map.
+ *
+ * While a destination is being chosen the map must stay uncovered, so the
+ * instruction goes in a thin bar rather than a sheet over the thing being
+ * tapped, and the button that started it becomes the way out.
  */
-function renderLegend(): void {
+function renderRouteState(state: RouteState): void {
+  const picking = state === "picking";
+  elements.routePrompt.hidden = !picking;
+  elements.routeButton.setAttribute("aria-pressed", String(picking));
+  elements.map.classList.toggle("map--picking", picking);
+  // Reporting stays available throughout; somebody may be standing in the
+  // water they are trying to route around.
+}
+
+/**
+ * The legend states every band three ways — swatch, texture and word — so it
+ * is readable under glare and without colour vision.
+ *
+ * It is rebuilt per view rather than shown twice: a legend listing words the
+ * map is not currently painting is worse than no legend at all.
+ */
+function renderLegend(view: MapView): void {
   const list = document.createElement("ul");
   list.className = "legend__list";
 
-  for (const level of RISK_LEVELS) {
-    const style = LEVEL_STYLES[level];
-
+  for (const [value, style] of stylesForView(view)) {
     const item = document.createElement("li");
     item.className = "legend__item";
 
     const swatch = document.createElement("span");
-    swatch.className = `legend__swatch legend__swatch--${level}`;
+    swatch.className = `legend__swatch legend__swatch--${value}`;
     swatch.style.setProperty("--level-colour", style.colour);
     swatch.setAttribute("aria-hidden", "true");
 
@@ -79,6 +118,38 @@ function renderLegend(): void {
   }
 
   elements.legend.replaceChildren(list);
+}
+
+/**
+ * Settle which question the map is answering, and say so.
+ *
+ * Called after every risk response and after every tap on the toggle, so the
+ * decision is re-taken against the newest forecast rather than being latched
+ * at load. Weather changes while the app is open; that is the entire point of
+ * the hourly job behind it.
+ */
+function applyViewDecision(): void {
+  const decision = decideView({
+    outlook: lastRisk?.rainOutlook,
+    anyConfirmed: hasConfirmedCell(currentCells),
+    manual: manualView,
+  });
+
+  // A safety rule that overrules a choice consumes it. Otherwise the map
+  // would silently snap back to terrain the moment the rain passed, which is
+  // a change the user never asked for and would not be watching for.
+  if (decision.overrodeChoice) manualView = null;
+
+  activeView = decision.view;
+  handles?.setView(activeView);
+  renderLegend(activeView);
+
+  elements.viewReason.textContent = decision.reason;
+  elements.viewBar.classList.toggle("view-bar--overridden", decision.overrodeChoice);
+
+  for (const option of elements.viewOptions) {
+    option.setAttribute("aria-pressed", String(option.dataset["view"] === activeView));
+  }
 }
 
 /** Say what the map is showing and how current it is. Never imply more. */
@@ -115,7 +186,9 @@ async function refreshForViewport(): Promise<void> {
     currentCells = risk.value.cells;
     handles.setRisk(currentCells);
     storeRisk(bbox, risk.value);
+    lastRisk = risk.value;
     describeRisk(risk.value);
+    applyViewDecision();
   } else {
     // Degrade readably: keep whatever is already drawn and say it is stale,
     // rather than blanking a map somebody may be using to decide a route.
@@ -151,12 +224,89 @@ function openDetailFor(cell: string, sheet: DetailSheet): void {
     basis: match.basis,
     explanation: match.explanation,
     hand: match.hand,
+    susceptibility: match.susceptibility,
     historicalFloodPoint: match.historicalFloodPoint,
     updatedAt: match.updatedAt,
+    terrainBand: match.terrainBand,
+    terrainExplanation: match.terrainExplanation,
+    view: activeView,
+    centre: [
+      (match.bounds.west + match.bounds.east) / 2,
+      (match.bounds.south + match.bounds.north) / 2,
+    ],
     reports: currentReports
       .filter((report) => report.cell === cell)
       .map((report) => ({ depthLabel: report.depthLabel, ageLabel: report.ageLabel })),
   });
+}
+
+/**
+ * The "alert me about this place" control inside the detail sheet.
+ *
+ * Lives on a cell rather than as a global button because the thing being
+ * watched is a place, and the user has just told us which one by tapping it.
+ * Asking for a notification permission at that moment has an obvious reason
+ * attached; asking on page load does not, and a refused permission is
+ * permanent until somebody goes digging in browser settings.
+ */
+function renderWatchSection(
+  detail: CellDetail,
+  publicKey: string | null,
+  support: ReturnType<typeof checkSupport>,
+): HTMLElement | null {
+  // Nothing at all rather than a disabled button: an unexplained dead control
+  // is worse than no control.
+  if (!support.supported || !publicKey) return null;
+
+  const section = document.createElement("section");
+  section.className = "watch";
+
+  const status = document.createElement("p");
+  status.className = "watch__status";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "button button--secondary watch__button";
+
+  const paint = (): void => {
+    const watching = watchedCells().has(detail.cell);
+    button.textContent = watching ? "Stop alerting me" : "Alert me about this place";
+    status.textContent = watching
+      ? "You will be told when flooding becomes likely here."
+      : "Get one alert if flooding becomes likely here, and one if people start reporting water.";
+    status.classList.toggle("watch__status--on", watching);
+  };
+
+  button.addEventListener("click", () => {
+    const watching = watchedCells().has(detail.cell);
+    button.disabled = true;
+    status.textContent = watching ? "Cancelling…" : "Setting up alerts…";
+
+    const action = watching
+      ? unwatchPlace(detail.centre[1], detail.centre[0])
+      : watchPlace(detail.centre[1], detail.centre[0], publicKey);
+
+    void action
+      .then((result) => {
+        rememberWatch(detail.cell, result?.watching ?? false);
+        paint();
+        if (result) status.textContent = result.message;
+      })
+      .catch((error: unknown) => {
+        // Say what went wrong. A control that silently does nothing is a
+        // control the user assumes worked.
+        status.textContent =
+          error instanceof Error ? error.message : "Could not change your alerts. Try again.";
+        status.classList.add("watch__status--error");
+      })
+      .finally(() => {
+        button.disabled = false;
+      });
+  });
+
+  paint();
+  section.append(button, status);
+  return section;
 }
 
 function showFatal(message: string): void {
@@ -165,8 +315,19 @@ function showFatal(message: string): void {
 }
 
 async function start(): Promise<void> {
-  renderLegend();
+  renderLegend(activeView);
   setStatus("Loading flood risk…", "pending");
+
+  for (const option of elements.viewOptions) {
+    option.addEventListener("click", () => {
+      const chosen = option.dataset["view"];
+      if (chosen !== "now" && chosen !== "terrain") return;
+      manualView = chosen;
+      // Re-decided rather than applied: a choice the safety rules refuse is
+      // refused visibly, with the reason next to the button that refused it.
+      applyViewDecision();
+    });
+  }
 
   // Both requests leave now. Nothing waits on the map.
   const configPromise = fetchConfig();
@@ -198,7 +359,13 @@ async function start(): Promise<void> {
     config.pilotArea.centre,
   );
 
-  const detailSheet = new DetailSheet(elements.detailSheet);
+  // Push may not be provisioned on this stack, and the browser may not do it
+  // at all. Both are decided once, here, so no control is ever offered that
+  // would fail after the user had already granted a permission.
+  const support = checkSupport(config.pushPublicKey);
+  const detailSheet = new DetailSheet(elements.detailSheet, (detail) =>
+    renderWatchSection(detail, config.pushPublicKey, support),
+  );
 
   const reportFlow = new ReportFlow(
     elements.reportSheet,
@@ -215,6 +382,33 @@ async function start(): Promise<void> {
 
   elements.reportButton.addEventListener("click", () => reportFlow.open());
 
+  const mapCentre = (): [number, number] => {
+    const centre = map.getCenter();
+    return [centre.lng, centre.lat];
+  };
+
+  const routeFlow = new RouteFlow(elements.routeSheet, {
+    mapCentre,
+    onRoute: (result, origin, destination) => {
+      if (!result || !result.found) {
+        // A refused route clears the map. Leaving the previous line drawn
+        // beside a "do not travel" message is how somebody follows the line.
+        handles?.setRoute(null);
+        return;
+      }
+      const drawn = { coordinates: result.geometry.coordinates, origin, destination };
+      handles?.setRoute(drawn);
+      handles?.frameRoute(drawn);
+    },
+    onState: renderRouteState,
+  });
+
+  elements.routeButton.addEventListener("click", () => {
+    if (routeFlow.currentState === "picking") routeFlow.cancel();
+    else routeFlow.start();
+  });
+  elements.routeCancel.addEventListener("click", () => routeFlow.cancel());
+
   map.on("load", () => {
     handles = installOverlays(map);
 
@@ -224,7 +418,9 @@ async function start(): Promise<void> {
         if (cached && handles) {
           handles.setRisk(cached.risk.cells);
           currentCells = cached.risk.cells;
+          lastRisk = cached.risk;
           describeRisk(cached.risk, cached);
+          applyViewDecision();
         } else {
           setStatus(
             result instanceof ApiError ? result.message : "Cannot load flood risk.",
@@ -237,7 +433,9 @@ async function start(): Promise<void> {
       currentCells = result.cells;
       handles?.setRisk(currentCells);
       storeRisk(pilotBbox, result);
+      lastRisk = result;
       describeRisk(result);
+      applyViewDecision();
     });
 
     void fetchReports(pilotBbox)
@@ -251,12 +449,22 @@ async function start(): Promise<void> {
 
     map.on("moveend", scheduleRefresh);
 
-    for (const layer of [RISK_LAYERS.fill, RISK_LAYERS.pattern]) {
-      map.on("click", layer, (event) => {
-        const cell = event.features?.[0]?.properties?.["cell"];
-        if (typeof cell === "string") openDetailFor(cell, detailSheet);
+    // One click handler on the map, not on the risk layers, so a destination
+    // can be chosen anywhere -- including over water, a park, or a gap in the
+    // grid. Binding this to the cells would make the untappable places the
+    // ones a person is most likely to be heading for.
+    map.on("click", (event) => {
+      if (routeFlow.currentState === "picking") {
+        routeFlow.chooseDestination([event.lngLat.lng, event.lngLat.lat]);
+        return;
+      }
+
+      const features = map.queryRenderedFeatures(event.point, {
+        layers: [RISK_LAYERS.fill, RISK_LAYERS.pattern].filter((id) => map.getLayer(id)),
       });
-    }
+      const cell = features[0]?.properties?.["cell"];
+      if (typeof cell === "string") openDetailFor(cell, detailSheet);
+    });
 
     map.on("mouseenter", RISK_LAYERS.fill, () => {
       map.getCanvas().style.cursor = "pointer";

@@ -5,7 +5,14 @@ import { documents, requireTable } from "../lib/dynamo.ts";
 import { json, problem } from "../lib/http.ts";
 import { bounds } from "../lib/geohash.ts";
 import { parseBbox, prefixesForViewport } from "../lib/pilot.ts";
-import { explainTerrain, levelFromScore, type RiskBasis } from "../lib/risk.ts";
+import {
+  describeTerrain,
+  explainTerrain,
+  levelFromScore,
+  terrainBand,
+  type RiskBasis,
+} from "../lib/risk.ts";
+import { rainOutlook, type RainOutlook } from "../lib/scoring.ts";
 
 interface RiskCellItem {
   cellPrefix: string;
@@ -21,6 +28,10 @@ interface RiskCellItem {
   basis?: string;
   explanation?: string;
   updatedAt?: string;
+  // The forecast the scoring job actually used for this cell. Null when the
+  // feed was down on that run, which is not the same as zero rain.
+  rainfall6h?: number | null;
+  rainfall24h?: number | null;
 }
 
 /**
@@ -61,6 +72,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   );
 
   let staleScores = false;
+  // The wettest cell in view decides the outlook. A viewport is dry only when
+  // all of it is: foregrounding terrain over a corner that has rain coming
+  // would hide the one thing the user needed to see.
+  let wettest6h = 0;
+  let wettest24h = 0;
+  let anyRainfallKnown = false;
+
   const cells = results
     .flatMap((result) => (result.Items ?? []) as RiskCellItem[])
     .filter((item) => {
@@ -85,6 +103,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         (item.basis as RiskBasis | undefined) ??
         (hasLiveScore ? "terrain-and-forecast" : "terrain-only");
 
+      if (typeof item.rainfall6h === "number" && typeof item.rainfall24h === "number") {
+        anyRainfallKnown = true;
+        wettest6h = Math.max(wettest6h, item.rainfall6h);
+        wettest24h = Math.max(wettest24h, item.rainfall24h);
+      }
+
       return {
         cell: item.cell,
         bounds: bounds(item.cell),
@@ -98,8 +122,23 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         hand: item.hand,
         historicalFloodPoint: item.historicalFloodPoint,
         updatedAt: item.updatedAt,
+        // The terrain reading, carried alongside the live one rather than
+        // instead of it. Both are always present, so the client can switch
+        // between showing weather and showing ground without a second request
+        // -- which matters on a connection where the second request is the one
+        // that does not arrive.
+        terrainBand: terrainBand(item.susceptibility),
+        terrainExplanation: describeTerrain(
+          item.susceptibility,
+          item.hand,
+          item.historicalFloodPoint,
+        ),
       };
     });
+
+  const outlook: RainOutlook | null = anyRainfallKnown
+    ? rainOutlook({ next6hMm: wettest6h, next24hMm: wettest24h })
+    : null;
 
   return json(
     200,
@@ -114,6 +153,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       basis: weakestBasis(cells),
       forecastAvailable:
         !staleScores && cells.every((cell) => cell.basis === "terrain-and-forecast"),
+      // Is rain coming at all? Null when the feed was down on the run that
+      // produced these cells -- the client must not read "no forecast" as
+      // "no rain" and quietly switch to the terrain view on that basis.
+      rainOutlook: outlook,
+      rainfall: anyRainfallKnown
+        ? { next6hMm: round1(wettest6h), next24hMm: round1(wettest24h) }
+        : null,
       generatedAt: new Date().toISOString(),
     },
     // Brief edge caching. Risk changes hourly at most, and a storm-time
@@ -128,6 +174,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
  * A viewport is only as current as its worst cell: if one corner was scored
  * without a forecast, the map must not tell the user it has one.
  */
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
 function weakestBasis(cells: ReadonlyArray<{ basis: RiskBasis }>): RiskBasis {
   if (cells.length === 0) return "terrain-only";
   if (cells.some((cell) => cell.basis === "terrain-only")) return "terrain-only";

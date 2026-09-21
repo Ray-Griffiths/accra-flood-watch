@@ -11,6 +11,15 @@ Parameters:
     AllowedValues: [dev, prod]
     Description: Deployment environment. Staging and production differ only by parameter.
 
+  VapidSubject:
+    Type: String
+    Default: mailto:accrafloodwatch@gctu.edu.gh
+    Description: >
+      Contact address push services use to reach the operator about a
+      misbehaving sender. Required by the Web Push spec; must be a mailto: or
+      https: URL.
+    AllowedPattern: "^(mailto:|https://).+"
+
 Globals:
   Function:
     Runtime: nodejs22.x
@@ -310,6 +319,13 @@ Resources:
           KeyType: HASH
         - AttributeName: subscriptionId
           KeyType: RANGE
+      TimeToLiveSpecification:
+        # A subscription nobody has refreshed in ninety days is a browser that
+        # is not coming back. It deletes itself rather than being pushed to
+        # forever, which keeps both the bill and the retained data bounded.
+        # Every visit re-registers, so an active user never lapses.
+        AttributeName: expiresAt
+        Enabled: true
 
   # ----------------------------------------------------------------------------
   # HTTP front door. Routes carry the /api prefix so CloudFront forwards
@@ -506,6 +522,108 @@ Resources:
       RetentionInDays: 7
 
   # ----------------------------------------------------------------------------
+  # Watch a place. Registers the browser's push subscription against the grid
+  # cell, so that when the scoring job raises that cell it finds everyone who
+  # needs telling in one query.
+  #
+  # Writes Watchers and nothing else. It cannot read them back: enumerating
+  # who is watching where is not something the public write path should be
+  # able to do, and dispatch belongs to the scoring function.
+  # ----------------------------------------------------------------------------
+  SaveWatchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/saveWatch.handler
+      Description: Register or cancel a push subscription for a watched cell.
+      Environment:
+        Variables:
+          WATCHERS_TABLE: !Ref WatchersTable
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt WatchersTable.Arn
+      Events:
+        SaveWatch:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /api/watch
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/saveWatch.ts
+
+  SaveWatchFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SaveWatchFunction}"
+      RetentionInDays: 7
+
+  # ----------------------------------------------------------------------------
+  # Safe routing. Reads the grid and the standing reports, turns them into
+  # GeoRoutes avoidance areas, and checks the returned geometry against the
+  # blocked cells itself -- Avoid.Areas is documented as best effort, and
+  # "never route through a confirmed cell" is not.
+  #
+  # Read-only on both tables. This function cannot write anything.
+  # ----------------------------------------------------------------------------
+  CalculateSafeRouteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/calculateSafeRoute.handler
+      Description: Walking or driving route that avoids reported flooding.
+      # Two DynamoDB query fans plus up to two GeoRoutes calls (the second is
+      # the direct route, calculated only so the answer can state the detour).
+      Timeout: 15
+      Environment:
+        Variables:
+          RISK_CELLS_TABLE: !Ref RiskCellsTable
+          REPORTS_TABLE: !Ref ReportsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RiskCellsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref ReportsTable
+        - Statement:
+            # Scoped to the provider resource rather than "*". GeoRoutes costs
+            # materially more per request than tiles, which is exactly why it
+            # is reached with IAM from here and never with a key in the browser.
+            - Effect: Allow
+              Action: geo-routes:CalculateRoutes
+              Resource: !Sub "arn:${AWS::Partition}:geo-routes:${AWS::Region}::provider/default"
+      Events:
+        CalculateRoute:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /api/route
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/calculateSafeRoute.ts
+
+  CalculateSafeRouteFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${CalculateSafeRouteFunction}"
+      RetentionInDays: 7
+
+  # ----------------------------------------------------------------------------
   # Client configuration. The map key is served rather than baked into the
   # bundle, so rotating it does not require rebuilding and redeploying the PWA.
   # ----------------------------------------------------------------------------
@@ -522,11 +640,18 @@ Resources:
           # for the life of the execution environment.
           MAP_API_KEY_NAME: !Sub "${AWS::StackName}-maps"
           MAP_STYLE: Standard
+          # The public half of the VAPID pair. Public by definition -- the
+          # browser needs it to subscribe. This function is deliberately not
+          # granted the private half or any KMS decrypt.
+          VAPID_PUBLIC_PARAMETER: !Sub "/${AWS::StackName}/vapid/public"
       Policies:
         - Statement:
             - Effect: Allow
               Action: geo:DescribeKey
               Resource: !GetAtt MapApiKey.KeyArn
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/vapid/public"
       Events:
         GetConfig:
           Type: HttpApi
@@ -582,7 +707,14 @@ Resources:
         Variables:
           RISK_CELLS_TABLE: !Ref RiskCellsTable
           REPORTS_TABLE: !Ref ReportsTable
+          WATCHERS_TABLE: !Ref WatchersTable
           TUNING_PARAMETER: !Ref ScoringTuning
+          # SecureString parameters cannot be created by CloudFormation, so
+          # these are provisioned out of band and referenced by name. A stack
+          # without them scores normally and sends nothing -- see the handler.
+          VAPID_PUBLIC_PARAMETER: !Sub "/${AWS::StackName}/vapid/public"
+          VAPID_PRIVATE_PARAMETER: !Sub "/${AWS::StackName}/vapid/private"
+          VAPID_SUBJECT: !Ref VapidSubject
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref RiskCellsTable
@@ -590,9 +722,28 @@ Resources:
         - DynamoDBReadPolicy:
             TableName: !Ref ReportsTable
         - Statement:
+            # Dispatch reads the watchers of a raised cell and deletes the
+            # subscriptions the push service reports as retired. It cannot
+            # create one: registration is saveWatch's job alone.
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:DeleteItem
+              Resource: !GetAtt WatchersTable.Arn
             - Effect: Allow
               Action: ssm:GetParameter
-              Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/scoring"
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/scoring"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/vapid/*"
+            - Effect: Allow
+              # Needed to read the SecureString half of the VAPID pair. Scoped
+              # by ViaService so this grant cannot be used to decrypt anything
+              # that did not come through Parameter Store.
+              Action: kms:Decrypt
+              Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
       Events:
         Hourly:
           Type: ScheduleV2

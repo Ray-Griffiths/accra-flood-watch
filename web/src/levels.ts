@@ -86,16 +86,107 @@ export function levelStyle(level: string): LevelStyle {
   return isRiskLevel(level) ? LEVEL_STYLES[level] : LEVEL_STYLES.low;
 }
 
+// ---------------------------------------------------------------------------
+// The terrain view
+// ---------------------------------------------------------------------------
+
 /**
- * Build a MapLibre `match` expression over the four levels.
+ * What the map shows when no rain is coming.
+ *
+ * On a dry day every cell scores near its terrain value and the warning map
+ * goes uniformly quiet. That is the correct answer to "is it dangerous now",
+ * and it also discards the one thing this project knows that nobody else
+ * publishes: which specific streets go under first. The terrain view puts that
+ * back on screen for the days when the warning has nothing to say.
+ *
+ * It is deliberately a different LANGUAGE, not a different shade of the same
+ * one:
+ *
+ *   - a purple ramp, nowhere near the blue-orange-red warning ramp, so the two
+ *     cannot be confused at a glance or in a screenshot;
+ *   - horizontal banding rather than diagonals, which reads as contour lines
+ *     and as water finding a level;
+ *   - verbs about the ground ("floods first") rather than about today
+ *     ("flooding likely").
+ *
+ * Someone who glances at this map must not come away believing they were
+ * warned about right now. That constraint drives every choice here.
+ */
+export type TerrainBand = "floods-first" | "floods-heavy" | "usually-dry";
+
+/** Worst ground first, matching the risk legend's most-serious-first ordering. */
+export const TERRAIN_BANDS: readonly TerrainBand[] = [
+  "floods-first",
+  "floods-heavy",
+  "usually-dry",
+];
+
+export const TERRAIN_STYLES: Record<TerrainBand, LevelStyle> = {
+  "floods-first": {
+    label: "Floods first",
+    meaning: "Goes under earliest when it rains hard",
+    colour: "#3f007d",
+    pattern: "terrain-dense",
+    outlineWidth: 1.5,
+    opacity: 0.4,
+  },
+  "floods-heavy": {
+    label: "Floods in heavy rain",
+    meaning: "Goes under when rain is heavy or long",
+    colour: "#6a51a3",
+    pattern: "terrain-medium",
+    outlineWidth: 1,
+    opacity: 0.3,
+  },
+  "usually-dry": {
+    label: "Usually stays dry",
+    meaning: "Drains reasonably well",
+    colour: "#9e9ac8",
+    pattern: "terrain-sparse",
+    outlineWidth: 0.5,
+    opacity: 0.18,
+  },
+};
+
+export function isTerrainBand(value: unknown): value is TerrainBand {
+  return typeof value === "string" && (TERRAIN_BANDS as readonly string[]).includes(value);
+}
+
+/** Unknown bands fall back to the least alarming reading, never the most. */
+export function terrainStyle(band: string): LevelStyle {
+  return isTerrainBand(band) ? TERRAIN_STYLES[band] : TERRAIN_STYLES["usually-dry"];
+}
+
+// ---------------------------------------------------------------------------
+// Switching between them
+// ---------------------------------------------------------------------------
+
+/** Which reading the overlay is currently drawing. */
+export type MapView = "now" | "terrain";
+
+/** Every style the overlay can paint, in the order the legend lists them. */
+export function stylesForView(view: MapView): ReadonlyArray<[string, LevelStyle]> {
+  return view === "terrain"
+    ? TERRAIN_BANDS.map((band) => [band, TERRAIN_STYLES[band]] as [string, LevelStyle])
+    : RISK_LEVELS.map((level) => [level, LEVEL_STYLES[level]] as [string, LevelStyle]);
+}
+
+/**
+ * Build a MapLibre `match` expression over whichever vocabulary is in play.
  *
  * Keeping this in one place means colour, pattern and outline weight cannot
- * drift apart from each other across layers.
+ * drift apart from each other across layers, and that the two views cannot
+ * drift apart in how they are assembled.
  */
-export function matchByLevel<T>(pick: (style: LevelStyle) => T, fallback: T): unknown[] {
-  const expression: unknown[] = ["match", ["get", "level"]];
-  for (const level of RISK_LEVELS) {
-    expression.push(level, pick(LEVEL_STYLES[level]));
+export function matchByView<T>(
+  view: MapView,
+  pick: (style: LevelStyle) => T,
+  fallback: T,
+): unknown[] {
+  const key = view === "terrain" ? "terrainBand" : "level";
+  const expression: unknown[] = ["match", ["get", key]];
+  for (const [value, style] of stylesForView(view)) {
+    expression.push(value, pick(style));
   }
   expression.push(fallback);
   return expression;

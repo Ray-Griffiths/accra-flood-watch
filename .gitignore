@@ -44,3 +44,4 @@ Thumbs.db
 
 # Local browser-verification artefacts (screenshots copied to docs/evidence/)
 .playwright-mcp/
+.impeccable/hook.cache.json

@@ -124,13 +124,24 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  min-height: 60vh;
+  min-height: 50vh;
 }
 
+/* `flex: 1` is what actually sizes the map -- it takes everything the other
+   bands do not need, so on a roomy screen it stays large. `min-height` is only
+   a floor for short screens, and it has to stay BELOW the height the flex
+   calculation would give, or it forces the page to scroll and the fixed action
+   bar ends up floating over the disclaimer. Adding the view bar is what made
+   the previous 55vh floor too high. */
 .map {
   flex: 1;
-  min-height: 55vh;
+  min-height: 38vh;
   background: #e9eef0;
+}
+
+/* A crosshair says "this tap places something" in a way no label has to. */
+.map--picking .maplibregl-canvas {
+  cursor: crosshair;
 }
 
 .noscript {
@@ -142,6 +153,69 @@ body {
 /* Muted so the map underneath stays the subject. */
 .maplibregl-ctrl-attrib {
   font-size: 10px;
+}
+
+/* ---------------------------------------------------------------- view bar */
+
+/* The map answers two questions with the same rectangles. This says which one
+   is on screen, and offers the other. The sentence leads: a toggle whose two
+   states are not explained is a toggle people leave alone. */
+.view-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.8rem;
+  padding: 0.5rem 1rem;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+.view-bar__reason {
+  flex: 1 1 12rem;
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--ink-soft);
+}
+
+/* When a safety rule overruled the user's choice, the sentence explaining it
+   is the most important text in this bar and stops looking like a caption. */
+.view-bar--overridden .view-bar__reason {
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.view-toggle {
+  display: flex;
+  flex: none;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+}
+
+.view-toggle__option {
+  min-height: 40px;
+  padding: 0 0.85rem;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Selection is carried by fill, weight and the underline together, so it
+   survives greyscale and glare. aria-pressed carries it for screen readers. */
+.view-toggle__option[aria-pressed="true"] {
+  background: var(--brand);
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: inset 0 -3px 0 rgb(255 255 255 / 45%);
 }
 
 /* ------------------------------------------------------------------ legend */
@@ -203,6 +277,33 @@ body {
   background-color: var(--level-colour);
 }
 
+/* Terrain bands band horizontally where risk levels hatch diagonally, so the
+   legend teaches the difference between the two views and not only the
+   difference within one of them. */
+.legend__swatch--usually-dry {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--level-colour) 0 1.5px,
+    transparent 1.5px 8px
+  );
+}
+
+.legend__swatch--floods-heavy {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--level-colour) 0 1.5px,
+    transparent 1.5px 5px
+  );
+}
+
+.legend__swatch--floods-first {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--level-colour) 0 1.5px,
+    transparent 1.5px 3px
+  );
+}
+
 .legend__text {
   display: flex;
   flex-direction: column;
@@ -218,9 +319,12 @@ body {
   font-size: 0.75rem;
 }
 
-/* ----------------------------------------------------------- report button */
+/* ---------------------------------------------------------------- actions */
 
-.report-button {
+/* Both live in one fixed bar so they cannot drift apart or overlap on a short
+   screen. Reporting stays visually dominant: it is the action that only this
+   person, standing in this spot, can perform. */
+.actions {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
@@ -229,24 +333,170 @@ body {
 
   display: flex;
   align-items: center;
+  gap: 0.5rem;
+  max-width: calc(100vw - 1.5rem);
+}
+
+.report-button {
+  display: flex;
+  align-items: center;
   gap: 0.6rem;
   /* Comfortably above the 48px minimum: this is pressed with a wet thumb. */
   min-height: 60px;
-  padding: 0 1.6rem;
+  padding: 0 1.4rem;
   border: none;
   border-radius: 999px;
 
   background: var(--danger);
   color: #ffffff;
   font-family: inherit;
-  font-size: 1.05rem;
+  font-size: 1.02rem;
   font-weight: 700;
+  /* Must not wrap. A wrapped label makes the bar three lines tall, and what
+     it grows over is the disclaimer -- the one sentence on this page that is
+     never allowed to be covered. */
+  white-space: nowrap;
   box-shadow: 0 6px 20px rgb(0 0 0 / 30%);
   cursor: pointer;
 }
 
-.report-button:active {
-  transform: translateX(-50%) scale(0.97);
+.report-button:active,
+.route-button:active {
+  transform: scale(0.97);
+}
+
+.route-button {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 60px;
+  padding: 0 1.15rem;
+  border: none;
+  border-radius: 999px;
+
+  background: var(--brand);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 30%);
+  cursor: pointer;
+}
+
+.route-button__icon {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.route-button[aria-pressed="true"] {
+  background: #ffb703;
+  color: var(--ink);
+}
+
+/* ----------------------------------------------------------- route prompt */
+
+/* While a destination is being chosen the map must stay uncovered, so the
+   instruction sits in a thin bar at the top rather than in a sheet over the
+   thing the user is trying to tap. */
+.route-prompt {
+  position: absolute;
+  top: 0.6rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: calc(100vw - 1.5rem);
+  padding: 0.5rem 0.5rem 0.5rem 1rem;
+  border-radius: 999px;
+  background: var(--ink);
+  color: #ffffff;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 35%);
+}
+
+.route-prompt[hidden] {
+  display: none;
+}
+
+.route-prompt__text {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.route-prompt__cancel {
+  min-height: 40px;
+  padding: 0 0.9rem;
+  border: 1px solid rgb(255 255 255 / 45%);
+  border-radius: 999px;
+  background: transparent;
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* --------------------------------------------------------------- callouts */
+
+/* Tinted panel rather than an accent bar down one side. The background and the
+   bold coloured text already carry the severity; a side rule added nothing
+   except a decorative edge. */
+.callout {
+  margin: 0.9rem 0 0;
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, currentcolor 30%, transparent);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.callout--warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.callout--danger {
+  background: var(--error-bg);
+  color: var(--danger);
+}
+
+.sheet__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1.1rem;
+}
+
+/* ------------------------------------------------------------ watch control */
+
+.watch {
+  margin-top: 1.1rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--line);
+}
+
+.watch__button {
+  width: 100%;
+}
+
+.watch__status {
+  margin: 0.55rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.83rem;
+}
+
+.watch__status--on {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.watch__status--error {
+  color: var(--error);
+  font-weight: 600;
 }
 
 .report-button:disabled {
@@ -268,7 +518,7 @@ body {
    it the button sits on top of the words "not an official warning service",
    which is the one sentence on this page that must never be obscured. */
 .disclaimer {
-  padding: 0.9rem 1rem calc(5.75rem + var(--safe-bottom));
+  padding: 0.9rem 1rem calc(6.25rem + var(--safe-bottom));
   background: var(--paper);
   border-top: 1px solid var(--line);
   color: var(--ink-soft);
@@ -502,6 +752,12 @@ body {
 .button--primary {
   background: var(--brand);
   color: #ffffff;
+}
+
+.button--secondary {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  color: var(--ink);
 }
 
 /* --------------------------------------------------------------- a11y */

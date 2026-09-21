@@ -44,39 +44,96 @@ export function levelFromScore(score: number): RiskLevel {
   return "low";
 }
 
+// ---------------------------------------------------------------------------
+// Terrain bands
+// ---------------------------------------------------------------------------
+
 /**
- * Explain a terrain-only score in one plain sentence.
+ * How this ground behaves when it rains. A permanent property, not a warning.
  *
- * Used until the hourly scoring job exists. It says what it knows and, just as
- * importantly, what it does not: showing a terrain score as though it were a
- * live forecast would overstate what the map actually knows.
+ * Risk levels answer "is it dangerous now"; on a dry day the honest answer for
+ * the whole city is no, and the map goes uniformly quiet. That is correct, and
+ * it also throws away the one thing this project knows that nobody else
+ * publishes: which specific streets go under first. The terrain band is that
+ * knowledge, kept in its own vocabulary so it can never be mistaken for a
+ * live warning.
+ */
+export type TerrainBand = "floods-first" | "floods-heavy" | "usually-dry";
+
+export const TERRAIN_BANDS: readonly TerrainBand[] = [
+  "floods-first",
+  "floods-heavy",
+  "usually-dry",
+];
+
+/**
+ * Banded at the same cut points as the risk levels.
+ *
+ * Not a coincidence worth avoiding: susceptibility IS the score on a cell with
+ * no forecast and no reports, so a cell that reads `high` from terrain alone
+ * must not fall into a different band than the one the level would give it.
+ * Two sets of cut points over the same number would eventually disagree.
+ */
+export function terrainBand(susceptibility: number): TerrainBand {
+  if (susceptibility >= HIGH_THRESHOLD) return "floods-first";
+  if (susceptibility >= WATCH_THRESHOLD) return "floods-heavy";
+  return "usually-dry";
+}
+
+const BAND_OUTLOOK: Record<TerrainBand, string> = {
+  "floods-first": "this area floods readily when it rains hard",
+  "floods-heavy": "this area can flood in heavy rain",
+  "usually-dry": "this area drains reasonably well",
+};
+
+/** Where the ground sits relative to the drain it would overflow from. */
+function heightPhrase(hand: number): string {
+  if (hand <= 1) return "ground here is barely above the nearest drain";
+  if (hand <= 4) return `ground here is about ${hand.toFixed(1)}m above the nearest drain`;
+  return `ground here sits ${hand.toFixed(0)}m above the nearest drain`;
+}
+
+/**
+ * The terrain reading in one plain sentence, with no reference to today.
+ *
+ * This is what the map says when it is showing ground rather than weather, so
+ * it deliberately carries no forecast caveat: the view around it already
+ * states that no rain is coming. Appending "no forecast yet" here would read
+ * as a fault when it is in fact the point.
+ */
+export function describeTerrain(
+  susceptibility: number,
+  hand: number,
+  historicalFloodPoint?: string,
+): string {
+  const parts = [heightPhrase(hand)];
+  if (historicalFloodPoint) {
+    parts.push(`flooding has been recorded at ${historicalFloodPoint}`);
+  }
+  const outlook = BAND_OUTLOOK[terrainBand(susceptibility)];
+  return `${capitalise(parts.join(", "))}. ${capitalise(outlook)}.`;
+}
+
+/**
+ * Explain a cell the scoring job has never reached.
+ *
+ * Says what it knows and, just as importantly, what it does not: showing a
+ * terrain score as though it were a live forecast would overstate what the map
+ * actually knows.
  */
 export function explainTerrain(
   susceptibility: number,
   hand: number,
   historicalFloodPoint?: string,
 ): string {
-  const parts: string[] = [];
-
-  if (hand <= 1) {
-    parts.push("ground here is barely above the nearest drain");
-  } else if (hand <= 4) {
-    parts.push(`ground here is about ${hand.toFixed(1)}m above the nearest drain`);
-  } else {
-    parts.push(`ground here sits ${hand.toFixed(0)}m above the nearest drain`);
-  }
-
+  const parts = [heightPhrase(hand)];
   if (historicalFloodPoint) {
     parts.push(`flooding has been recorded at ${historicalFloodPoint}`);
   }
-
-  const level = levelFromScore(susceptibility);
-  const outlook =
-    level === "high"
-      ? "this area floods readily when it rains hard"
-      : level === "watch"
-        ? "this area can flood in heavy rain"
-        : "this area drains reasonably well";
-
+  const outlook = BAND_OUTLOOK[terrainBand(susceptibility)];
   return `${parts.join(", ")}. Based on terrain only — ${outlook}. No rainfall forecast yet.`;
+}
+
+function capitalise(text: string): string {
+  return text.length === 0 ? text : text[0]!.toUpperCase() + text.slice(1);
 }

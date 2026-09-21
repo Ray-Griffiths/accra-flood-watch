@@ -122,6 +122,48 @@ export function rainfallComponent(forecast: RainfallForecast): number {
   return Math.max(acute, sustained);
 }
 
+/**
+ * Whether rain is coming at all, as a three-way answer.
+ *
+ * Distinct from the rainfall component, which is a contribution to a score.
+ * This is a question about the day: it decides whether the map should be
+ * showing weather or showing ground. A number near zero and a number that
+ * merely rounds to something are the same answer to that question, and the
+ * score cannot express it — a 3mm day and a 0mm day both land at `low`.
+ */
+export type RainOutlook = "none" | "light" | "significant";
+
+/**
+ * Below this the forecast is noise rather than weather.
+ *
+ * Matched to the wording in `rainSentence`, which already calls this "little
+ * or no rain": one threshold, so the sentence and the view cannot disagree
+ * about whether it is going to rain.
+ */
+export const RAIN_NONE_6H_MM = 1;
+export const RAIN_NONE_24H_MM = 2;
+
+/**
+ * Where rain starts to lift the risk rather than merely register.
+ *
+ * 10mm in six hours puts the rainfall component near 6 of 100 and 20mm near
+ * 17; below that the terrain is doing essentially all the work, and saying so
+ * is more useful than implying the forecast is driving the map.
+ */
+export const RAIN_SIGNIFICANT_6H_MM = 10;
+export const RAIN_SIGNIFICANT_24H_MM = 20;
+
+export function rainOutlook(forecast: RainfallForecast): RainOutlook {
+  const six = Number.isFinite(forecast.next6hMm) ? forecast.next6hMm : 0;
+  const day = Number.isFinite(forecast.next24hMm) ? forecast.next24hMm : 0;
+
+  if (six >= RAIN_SIGNIFICANT_6H_MM || day >= RAIN_SIGNIFICANT_24H_MM) {
+    return "significant";
+  }
+  if (six < RAIN_NONE_6H_MM && day < RAIN_NONE_24H_MM) return "none";
+  return "light";
+}
+
 export interface ScoringReport {
   cell: string;
   depth: DepthLevel;
