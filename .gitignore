@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+dist/
+build/
+.vite/
+
+# AWS SAM
+.aws-sam/
+packaged.yaml
+samconfig.toml.bak
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+vapid-keys.json
+
+# Terrain preprocessing artefacts (large rasters; regenerate via the notebook)
+preprocessing/data/
+preprocessing/output/*.tif
+*.tif
+*.tiff
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/settings.json
