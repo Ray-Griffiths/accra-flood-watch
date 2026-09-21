@@ -12,6 +12,13 @@
  *   - a word.
  *
  * Any one of them alone is enough to read the map.
+ *
+ * The wording describes the CURRENT situation, not the ground. Before the
+ * hourly scoring job existed these read as terrain descriptions ("floods
+ * readily when it rains hard"), which stopped being true the moment the score
+ * started responding to the forecast: on a dry day a flood-prone street is
+ * genuinely not a concern right now, and saying otherwise every day is how a
+ * warning gets ignored on the day it matters.
  */
 
 export type RiskLevel = "low" | "watch" | "high" | "confirmed";
@@ -38,7 +45,7 @@ export interface LevelStyle {
 export const LEVEL_STYLES: Record<RiskLevel, LevelStyle> = {
   low: {
     label: "Low",
-    meaning: "Drains reasonably well",
+    meaning: "No particular concern right now",
     colour: "#2b83ba",
     pattern: "risk-dots",
     outlineWidth: 0.5,
@@ -46,7 +53,7 @@ export const LEVEL_STYLES: Record<RiskLevel, LevelStyle> = {
   },
   watch: {
     label: "Watch",
-    meaning: "Can flood in heavy rain",
+    meaning: "Could develop — stay aware",
     colour: "#e08214",
     pattern: "risk-hatch",
     outlineWidth: 1,
@@ -54,7 +61,7 @@ export const LEVEL_STYLES: Record<RiskLevel, LevelStyle> = {
   },
   high: {
     label: "High",
-    meaning: "Floods readily when it rains hard",
+    meaning: "Flooding likely — avoid if you can",
     colour: "#d7301f",
     pattern: "risk-cross",
     outlineWidth: 1.5,
@@ -62,7 +69,7 @@ export const LEVEL_STYLES: Record<RiskLevel, LevelStyle> = {
   },
   confirmed: {
     label: "Flooded now",
-    meaning: "People have reported water here",
+    meaning: "People are reporting water now",
     colour: "#6b0000",
     pattern: "risk-solid",
     outlineWidth: 2.5,

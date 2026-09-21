@@ -349,6 +349,14 @@ Resources:
       CodeUri: backend/
       Handler: src/handlers/health.handler
       Description: Liveness probe and last scoring run time.
+      Environment:
+        Variables:
+          RISK_CELLS_TABLE: !Ref RiskCellsTable
+      Policies:
+        # One GetItem against the "#meta" partition. Read-only, like every
+        # other handler that is not the write path.
+        - DynamoDBReadPolicy:
+            TableName: !Ref RiskCellsTable
       Events:
         Health:
           Type: HttpApi
@@ -540,6 +548,117 @@ Resources:
     Properties:
       LogGroupName: !Sub "/aws/lambda/${GetConfigFunction}"
       RetentionInDays: 7
+
+  # ----------------------------------------------------------------------------
+  # Hourly scoring. This is what makes the system live rather than a static
+  # terrain map: it combines terrain with the rainfall forecast and the reports
+  # standing in each cell, and writes back a score, a level and the sentence
+  # that justifies them. Nothing is scored on the request path.
+  # ----------------------------------------------------------------------------
+  ScoringTuning:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AWS::StackName}/scoring"
+      Type: String
+      Description: Risk thresholds and component weights. Tunable without a redeploy.
+      # Editing this in the console takes effect on the next scoring run, which
+      # is the point: thresholds can be tuned during a live demo. CloudFormation
+      # owns the value, so a console edit is reverted by the next deploy -- an
+      # accepted trade for being able to change it in seconds.
+      Value: '{"thresholds":{"watch":45,"high":70},"weights":{"susceptibility":0.4,"rainfall":0.4,"reports":0.2}}'
+
+  ScoreRiskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/scoreRisk.handler
+      Description: Hourly risk recomputation across the whole pilot grid.
+      # Roughly 40 queries, an external forecast call and ~1,140 writes. It
+      # finishes in seconds, but the forecast feed is a third party and the
+      # timeout has to cover a slow one rather than truncating the run.
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          RISK_CELLS_TABLE: !Ref RiskCellsTable
+          REPORTS_TABLE: !Ref ReportsTable
+          TUNING_PARAMETER: !Ref ScoringTuning
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RiskCellsTable
+        # Reports are read to score them and never written by this function.
+        - DynamoDBReadPolicy:
+            TableName: !Ref ReportsTable
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/scoring"
+      Events:
+        Hourly:
+          Type: ScheduleV2
+          Properties:
+            # Top of every hour, per section 7.5 of the plan.
+            ScheduleExpression: cron(0 * * * ? *)
+            ScheduleExpressionTimezone: UTC
+            Description: Hourly Accra Flood Watch risk recomputation.
+            RetryPolicy:
+              # One hour until the next run; two quick retries cover a blip in
+              # the forecast feed without stacking invocations.
+              MaximumRetryAttempts: 2
+              MaximumEventAgeInSeconds: 600
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/scoreRisk.ts
+
+  ScoreRiskFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ScoreRiskFunction}"
+      RetentionInDays: 7
+
+  # An hourly job that stops running is invisible until somebody notices the
+  # map is stale. This makes it noisy instead: the metric is emitted on every
+  # successful run, so "no data" for three hours is itself the alarm.
+  ScoringStalledAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-scoring-stalled"
+      AlarmDescription: Risk scoring has not completed successfully in three hours.
+      Namespace: AccraFloodWatch
+      MetricName: CellsScored
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+
+  # The forecast feed failing is not an outage -- the map degrades to terrain
+  # and reports and says so. It is still worth knowing about.
+  ForecastFeedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-forecast-feed-down"
+      AlarmDescription: The rainfall forecast feed has been unavailable for three hours.
+      Namespace: AccraFloodWatch
+      MetricName: ForecastAvailable
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Maximum
+      Period: 3600
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
 
 Outputs:
   SiteUrl:

@@ -18,6 +18,7 @@ interface RiskCellItem {
   // Written by the hourly scoring job; absent until it first runs.
   score?: number;
   level?: string;
+  basis?: string;
   explanation?: string;
   updatedAt?: string;
 }
@@ -77,7 +78,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       if (!hasLiveScore) staleScores = true;
 
       const score = hasLiveScore ? item.score! : item.susceptibility;
-      const basis: RiskBasis = hasLiveScore ? "terrain-and-forecast" : "terrain-only";
+      // The scoring job records what it actually had to work with. Trust that
+      // over any inference made here: only it knows whether the forecast feed
+      // answered on the run that produced this number.
+      const basis: RiskBasis =
+        (item.basis as RiskBasis | undefined) ??
+        (hasLiveScore ? "terrain-and-forecast" : "terrain-only");
 
       return {
         cell: item.cell,
@@ -100,10 +106,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     {
       cells,
       cellCount: cells.length,
-      // Fail readable: the map must always say what it is showing and how old
-      // it is, rather than presenting terrain susceptibility as a live warning.
-      basis: staleScores ? "terrain-only" : "terrain-and-forecast",
-      forecastAvailable: !staleScores,
+      // Fail readable: the map must always say what it is showing, rather than
+      // presenting terrain susceptibility as though it were a live warning.
+      // Reported at the weakest basis of any cell in view -- claiming a
+      // forecast the whole viewport does not have would be the overstatement
+      // this field exists to prevent.
+      basis: weakestBasis(cells),
+      forecastAvailable:
+        !staleScores && cells.every((cell) => cell.basis === "terrain-and-forecast"),
       generatedAt: new Date().toISOString(),
     },
     // Brief edge caching. Risk changes hourly at most, and a storm-time
@@ -111,3 +121,16 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     60,
   );
 };
+
+/**
+ * The least informed basis among the cells on screen.
+ *
+ * A viewport is only as current as its worst cell: if one corner was scored
+ * without a forecast, the map must not tell the user it has one.
+ */
+function weakestBasis(cells: ReadonlyArray<{ basis: RiskBasis }>): RiskBasis {
+  if (cells.length === 0) return "terrain-only";
+  if (cells.some((cell) => cell.basis === "terrain-only")) return "terrain-only";
+  if (cells.some((cell) => cell.basis === "terrain-and-reports")) return "terrain-and-reports";
+  return "terrain-and-forecast";
+}

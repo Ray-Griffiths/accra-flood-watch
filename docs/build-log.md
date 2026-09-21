@@ -355,3 +355,103 @@ chip, so it teaches the pattern and not only the colour.
   interface is already prepared to display.
 - `saveWatch` and web push for saved locations.
 - `calculateSafeRoute` with `GeoRoutes.CalculateRoutes` and `Avoid.Areas`.
+
+---
+
+## Day 4 — 2026-09-21 — Hourly scoring: the system becomes live
+
+### Shipped
+
+The map no longer shows terrain. It shows *risk right now*: an EventBridge
+schedule runs `scoreRisk` at the top of every hour, which combines terrain
+susceptibility with the rainfall forecast and the reports standing in and
+around each cell, and writes back a score, a level and the sentence that
+justifies them. Nothing is scored on the request path.
+
+- **`scoreRisk`** — 1,140 cells in ~2.8s, ~40 prefix queries and 46 batched
+  writes. No scan anywhere.
+- **Open-Meteo forecast** — four representative points across the pilot area in
+  a single request, each cell taking the nearest. Chosen for having no API key:
+  no secret to rotate, nothing to leak, nothing to configure on a fresh deploy.
+- **Thresholds in Parameter Store**, tunable live. Verified by changing them
+  and watching the level distribution move (see below).
+- **CloudWatch EMF metrics** plus two alarms: one for scoring stalling
+  (`TreatMissingData: breaching`, so silence is itself the alarm) and one for
+  the forecast feed being unavailable for three hours.
+- **`/api/health` now reports the scoring state** — last run, age, cells
+  scored, and whether the forecast was available. Still returns 200 when
+  scoring is stale: the service IS up, and conflating "degraded" with "down"
+  pages somebody for the wrong thing.
+
+### Verified against production
+
+| Check | Result |
+|---|---|
+| Full scoring run | 1,140/1,140 cells, 2.8s, forecast available (4 points) |
+| `/api/health` | `state: current`, `ageMinutes: 0`, `forecastAvailable: true` |
+| Live threshold tuning | watch 45→20, high 70→40 ⇒ `high` went 0 → 285 cells |
+| `CellsRaisedToHigh` | correctly reported all 285 transitions |
+| Malformed tuning value | rejected, fell back to built-in defaults, still scored 1,140 |
+| Restored thresholds | back to low 1,075 / watch 65 / high 0 |
+
+69 tests pass, up from 24. The new ones cover the model itself, including the
+boundary at each threshold in both directions.
+
+### Two bugs the testing actually caught
+
+**1. Caching defeated the entire point of Parameter Store.** `loadTuning` held
+the value at module scope "for the life of the execution environment". Changing
+the threshold and re-invoking produced *no change at all*, because the warm
+container kept serving the old value. The saving was a few milliseconds against
+a run that takes seconds; the cost was that the one feature the parameter exists
+for — tuning during a live demo — silently did not work. Cache removed.
+
+**2. A permanent 20-point handicap on every quiet cell.** The first
+implementation weighted reports at 20% and scored their absence as zero. That
+holds every cell without reports 20 points below what its terrain and forecast
+justify. But nobody reporting water is not evidence that there is no water — it
+is evidence that nobody with a phone has walked past yet, which is most true at
+night and in the areas with the fewest users. Penalising silence under-warns
+precisely the people this is built for.
+
+Both optional components now redistribute their weight when absent rather than
+contributing a zero, for the same reason in two disguises: a missing forecast
+counted as "no rain" would mark the whole city safe at the exact moment the feed
+broke. With neither available the score is the terrain susceptibility itself,
+which is the honest answer.
+
+### A visible consequence, stated plainly
+
+Today's forecast for Accra is about 3mm. Under the model that puts the whole
+pilot area at `low`, with 65 cells at `watch` along the drainage corridor, and
+**no cells at `high`**. The map went from mostly red to mostly blue.
+
+This is correct, and it is the entire point of the hourly job. The plan defines
+High as "flooding is likely here, avoid if you can" — on a dry day that is
+false, and a map that says it every day is a map people learn to ignore before
+the day it matters. The terrain reading has not been lost: it still drives 40%
+of the score, it is still returned as `susceptibility`, and the explanation
+still opens with "ground here is barely above the nearest drain".
+
+For a demonstration in dry weather, the thresholds in Parameter Store are the
+intended lever, and they now genuinely work.
+
+### Honest state
+
+- The legend previously described terrain ("floods readily when it rains
+  hard"). That stopped being true the moment levels started responding to the
+  forecast, so it now describes the situation: "flooding likely — avoid if you
+  can". Same for the other three levels.
+- **Watcher notification is counted, not dispatched.** `scoreRisk` detects
+  cells newly crossing into `high` and emits `CellsRaisedToHigh`, but web push
+  does not exist yet, so nobody is told. `saveWatch` turns the count into a
+  dispatch.
+- The 8 historical flood points remain **unverified** and still override the
+  terrain model in their cells.
+- Test reports created during verification were deleted afterwards; the
+  `Reports` table is empty.
+
+### Next
+
+- `saveWatch` and web push, which turns `CellsRaisedToHigh` into an alert.
+- `calculateSafeRoute` with `GeoRoutes.CalculateRoutes` and `Avoid.Areas`.

@@ -9,7 +9,10 @@
 export type RiskLevel = "low" | "watch" | "high" | "confirmed";
 
 /** What the score was computed from. Shown to the user, not decoration. */
-export type RiskBasis = "terrain-only" | "terrain-and-forecast" | "reports";
+export type RiskBasis =
+  | "terrain-only"
+  | "terrain-and-reports"
+  | "terrain-and-forecast";
 
 export const WATCH_THRESHOLD = 45;
 export const HIGH_THRESHOLD = 70;
