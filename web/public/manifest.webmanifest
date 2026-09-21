@@ -1,0 +1,20 @@
+{
+  "name": "Accra Flood Watch",
+  "short_name": "Flood Watch",
+  "description": "Street-level flood risk, live depth reports and flood-avoiding routes for Accra.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6f8f9",
+  "theme_color": "#0b3d5c",
+  "categories": ["weather", "navigation", "utilities"],
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

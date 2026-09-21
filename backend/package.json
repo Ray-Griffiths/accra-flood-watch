@@ -1,0 +1,19 @@
+{
+  "name": "afw-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Accra Flood Watch Lambda handlers",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "esbuild": "^0.24.2"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.147",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

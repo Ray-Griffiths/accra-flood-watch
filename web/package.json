@@ -1,0 +1,19 @@
+{
+  "name": "afw-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Accra Flood Watch progressive web application",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}

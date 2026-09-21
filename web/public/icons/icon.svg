@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Accra Flood Watch">
+  <rect width="512" height="512" rx="96" fill="#0b3d5c"/>
+  <path d="M256 96c0 0 104 118 104 186a104 104 0 1 1-208 0c0-68 104-186 104-186z" fill="#7fc8e8"/>
+  <path d="M96 392c40 0 40-24 80-24s40 24 80 24 40-24 80-24 40 24 80 24" fill="none" stroke="#f6f8f9" stroke-width="26" stroke-linecap="round"/>
+</svg>

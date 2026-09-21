@@ -1,0 +1,142 @@
+/*
+ * Built for a mid-range Android phone, outdoors, in rain, in bright light.
+ * High contrast, large touch targets, system fonts so nothing blocks render.
+ */
+
+:root {
+  --ink: #10242e;
+  --ink-soft: #46606d;
+  --paper: #f6f8f9;
+  --surface: #ffffff;
+  --line: #d6dee2;
+  --brand: #0b3d5c;
+  --ok: #1a6b3c;
+  --ok-bg: #e4f4ea;
+  --error: #9a2318;
+  --error-bg: #fbe9e7;
+  --pending: #6b5a1a;
+  --pending-bg: #fbf3d9;
+  --radius: 10px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 17px;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+
+#app {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 1rem;
+}
+
+.masthead h1 {
+  margin: 0;
+  font-size: 1.6rem;
+  letter-spacing: -0.01em;
+  color: var(--brand);
+}
+
+.tagline {
+  margin: 0.35rem 0 1.75rem;
+  color: var(--ink-soft);
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.panel--muted {
+  background: transparent;
+  border-style: dashed;
+}
+
+.panel h2 {
+  margin: 0 0 0.6rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+}
+
+/* Status carries a text label as well as colour, so it stays readable in
+   glare and for colour-blind users. */
+.status {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  display: inline-block;
+}
+
+.status--ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.status--error {
+  color: var(--error);
+  background: var(--error-bg);
+}
+
+.status--pending {
+  color: var(--pending);
+  background: var(--pending-bg);
+}
+
+.detail {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.3rem 1rem;
+  margin: 1rem 0 0;
+  font-size: 0.92rem;
+}
+
+.detail dt {
+  color: var(--ink-soft);
+}
+
+.detail dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.roadmap {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--ink-soft);
+}
+
+.roadmap li {
+  margin-bottom: 0.3rem;
+}
+
+.disclaimer {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 0 1.25rem 2.5rem;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+.disclaimer strong {
+  color: var(--ink);
+}

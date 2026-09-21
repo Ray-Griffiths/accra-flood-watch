@@ -1,0 +1,314 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Accra Flood Watch - neighbourhood flood risk, reporting and safe routing for Accra.
+  Skeleton stack: static PWA on S3 behind CloudFront, HTTP API, health handler.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: Deployment environment. Staging and production differ only by parameter.
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    Timeout: 5
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        NODE_OPTIONS: --enable-source-maps
+
+Resources:
+  # ----------------------------------------------------------------------------
+  # Static site origin. Block all public access; CloudFront reads via OAC only.
+  # ----------------------------------------------------------------------------
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        # A bad deployment is rolled back in seconds rather than rebuilt.
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontReadViaOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${WebBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+          - Sid: DenyUnencryptedTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt WebBucket.Arn
+              - !Sub "${WebBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ----------------------------------------------------------------------------
+  # The public face of the project. This URL is what the ship gate is judged on.
+  # ----------------------------------------------------------------------------
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "Accra Flood Watch (${Environment})"
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        # PriceClass 100 covers Europe, which is what serves Accra.
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: s3-web
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+          - Id: http-api
+            DomainName: !Sub "${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: s3-web
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed-CachingOptimized
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # Managed-SecurityHeadersPolicy
+        CacheBehaviors:
+          # Serving the API under the same origin means the browser makes
+          # same-origin calls and no CORS preflight is ever needed.
+          - PathPattern: /api/*
+            TargetOriginId: http-api
+            ViewerProtocolPolicy: https-only
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # Managed-CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewerExceptHostHeader
+        CustomErrorResponses:
+          # Makes client-side routing work against a static origin.
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+        ViewerCertificate:
+          # Default CloudFront domain arrives with a valid certificate.
+          CloudFrontDefaultCertificate: true
+
+  # ----------------------------------------------------------------------------
+  # Persistence. Every table is partitioned by geohash cell, which is what makes
+  # every read a single query: a geohash prefix describes a contiguous area, so
+  # a map viewport resolves to a small set of prefixes. No scan, ever.
+  # ----------------------------------------------------------------------------
+  RiskCellsTable:
+    Type: AWS::DynamoDB::Table
+    # Regenerable: re-run the preprocessing pipeline and re-seed.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub "${AWS::StackName}-risk-cells"
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        # Encrypted at rest either way. `false` selects the AWS-owned key,
+        # which costs nothing; `true` would switch to an AWS-managed KMS key
+        # and add charges for no benefit here, since this table holds only
+        # derived terrain data and there is no compliance requirement for a
+        # customer-managed key.
+        SSEEnabled: false
+      AttributeDefinitions:
+        - AttributeName: cell
+          AttributeType: S
+      KeySchema:
+        - AttributeName: cell
+          KeyType: HASH
+
+  ReportsTable:
+    Type: AWS::DynamoDB::Table
+    # Community reports cannot be regenerated. A stack delete or a replacing
+    # update must never take them with it.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "${AWS::StackName}-reports"
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        # See RiskCellsTable. Reports carry no personal data by design: a
+        # report is coordinates, a severity and a timestamp, with nothing
+        # linking two reports from the same device.
+        SSEEnabled: false
+      AttributeDefinitions:
+        - AttributeName: cell
+          AttributeType: S
+        - AttributeName: reportId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: cell
+          KeyType: HASH
+        - AttributeName: reportId
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        # Reports delete themselves 24h after submission, at no cost, with no
+        # cleanup job. This is the technical guarantee behind the privacy
+        # promise, and it keeps the map honest: yesterday's report is not
+        # evidence about today.
+        AttributeName: expiresAt
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        # Accumulated community reports are the one genuinely irreplaceable
+        # asset this project has.
+        PointInTimeRecoveryEnabled: true
+
+  WatchersTable:
+    Type: AWS::DynamoDB::Table
+    # Push subscriptions are re-established by the browser on next visit.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub "${AWS::StackName}-watchers"
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        # See RiskCellsTable. Holds an opaque browser push endpoint and a
+        # label, never a person.
+        SSEEnabled: false
+      AttributeDefinitions:
+        - AttributeName: cell
+          AttributeType: S
+        - AttributeName: subscriptionId
+          AttributeType: S
+      KeySchema:
+        # Keyed by cell rather than by user, so that when a cell turns red the
+        # scoring function finds everyone who needs telling in one query.
+        # Keying by user would force a scan at exactly the wrong moment.
+        - AttributeName: cell
+          KeyType: HASH
+        - AttributeName: subscriptionId
+          KeyType: RANGE
+
+  # ----------------------------------------------------------------------------
+  # HTTP front door. Routes carry the /api prefix so CloudFront forwards
+  # them through unchanged - CloudFront cannot rewrite paths without a function.
+  # ----------------------------------------------------------------------------
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      # Same-origin through CloudFront means CORS is not required. It is set
+      # anyway so `sam local` and the Vite dev server can reach the API.
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowHeaders: [content-type]
+        AllowMethods: [GET, POST, DELETE, OPTIONS]
+        MaxAge: 300
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        # Request bodies are deliberately excluded so that reported
+        # coordinates are never duplicated into logs.
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.path","status":"$context.status","latency":"$context.responseLatency","integrationError":"$context.integrationErrorMessage"}
+
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}"
+      # Retention is set explicitly everywhere. The default never expires.
+      RetentionInDays: 7
+
+  # ----------------------------------------------------------------------------
+  # Health: liveness and last scoring run time. Monitored through judging.
+  # ----------------------------------------------------------------------------
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/health.handler
+      Description: Liveness probe and last scoring run time.
+      Events:
+        Health:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /api/health
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/health.ts
+
+  HealthFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${HealthFunction}"
+      RetentionInDays: 7
+
+Outputs:
+  SiteUrl:
+    Description: Public HTTPS URL. This is the ship gate.
+    Value: !Sub "https://${Distribution.DomainName}"
+  HealthUrl:
+    Description: Health endpoint, for uptime checks during judging.
+    Value: !Sub "https://${Distribution.DomainName}/api/health"
+  WebBucketName:
+    Description: S3 bucket holding the built PWA.
+    Value: !Ref WebBucket
+  DistributionId:
+    Description: CloudFront distribution id, used for cache invalidation.
+    Value: !Ref Distribution
+  ApiEndpoint:
+    Description: Direct API Gateway endpoint, bypassing CloudFront.
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  RiskCellsTableName:
+    Description: Risk cell grid, seeded from the terrain preprocessing artefact.
+    Value: !Ref RiskCellsTable
+  ReportsTableName:
+    Description: Community depth reports, self-expiring after 24 hours.
+    Value: !Ref ReportsTable
+  WatchersTableName:
+    Description: Web push subscriptions, keyed by watched cell.
+    Value: !Ref WatchersTable
