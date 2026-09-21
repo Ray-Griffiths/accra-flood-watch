@@ -41,3 +41,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/settings.json
+
+# Local browser-verification artefacts (screenshots copied to docs/evidence/)
+.playwright-mcp/

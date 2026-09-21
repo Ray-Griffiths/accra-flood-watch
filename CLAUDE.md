@@ -66,6 +66,26 @@ safe-routing feature needs. Verified available in `eu-west-1`.
 `sam build` must not rely on `--use-container`. Keep all Lambda dependencies pure-JS.
 If something ever needs a native binary, raise it rather than silently adding Docker.
 
+### 3. MapLibre GL JS is pinned to v5 — do not upgrade to v6
+
+`maplibre-gl@6.10.0` never fires `load` and never requests a tile against the Amazon
+Location Standard style. The style parses and the WebGL context is live, but the
+covering-tile computation yields nothing and the canvas is never painted — with no
+error on any channel. It reproduces with the stock MapLibre demo style and no custom
+options, so it is not our code, the style, or the key.
+
+`5.24.0` works. Pinned to `^5.24.0` in `web/package.json`. Re-test against a real
+render before ever moving to v6; "it builds" proves nothing here.
+
+Two related facts that are easy to rediscover the hard way:
+
+- **Amazon Location's style descriptor returns absolute `maps.geo.*` URLs.** `map.ts`
+  rewrites them to this origin via `transformRequest` so tiles go through CloudFront.
+  Remove that and tile caching silently stops working — nothing looks broken, the bill
+  just grows.
+- Because of that rewrite, tiles are same-origin, so the service worker must keep
+  excluding `/v2/*` or it will cache tiles without bound.
+
 ---
 
 ## Architecture

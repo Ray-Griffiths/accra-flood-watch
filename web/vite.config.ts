@@ -1,4 +1,25 @@
-import { defineConfig } from "vite";
+import { defineConfig, type ProxyOptions } from "vite";
+
+/**
+ * Both local servers stand in for the two CloudFront behaviours, so that
+ * development, `vite preview` and production all share one same-origin code
+ * path. Nothing needs CORS, and the tile-rewriting in map.ts is exercised
+ * locally rather than first discovered in production.
+ */
+const proxy: Record<string, ProxyOptions> = {
+  "/api": {
+    target: process.env.VITE_API_ORIGIN ?? "http://localhost:3000",
+    changeOrigin: true,
+  },
+  // Amazon Location tiles, glyphs and sprites. The client rewrites every
+  // absolute maps.geo URL to this origin so the requests travel through the
+  // edge cache in production; without the same target locally the map would
+  // simply have no tiles.
+  "/v2": {
+    target: process.env.VITE_MAPS_ORIGIN ?? "https://maps.geo.eu-west-1.amazonaws.com",
+    changeOrigin: true,
+  },
+};
 
 export default defineConfig({
   build: {
@@ -8,14 +29,6 @@ export default defineConfig({
     sourcemap: true,
     target: "es2020",
   },
-  server: {
-    proxy: {
-      // Mirrors the CloudFront /api/* behaviour so dev and prod share one
-      // same-origin code path and neither needs CORS handling.
-      "/api": {
-        target: process.env.VITE_API_ORIGIN ?? "http://localhost:3000",
-        changeOrigin: true,
-      },
-    },
-  },
+  server: { proxy },
+  preview: { proxy },
 });

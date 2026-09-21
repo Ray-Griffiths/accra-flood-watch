@@ -14,35 +14,62 @@
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <main id="app">
+    <div class="app">
       <header class="masthead">
-        <h1>Accra Flood Watch</h1>
-        <p class="tagline">Flood risk and safe routes for Circle, Kaneshie and Avenor</p>
+        <div class="masthead__title">
+          <h1>Accra Flood Watch</h1>
+          <p class="tagline">Circle · Kaneshie · Avenor</p>
+        </div>
+        <!-- Status is the first thing announced, because "what am I looking
+             at and how old is it" precedes everything else on this screen. -->
+        <p id="status" class="status status--pending" role="status" aria-live="polite">
+          Loading flood risk…
+        </p>
       </header>
 
-      <section class="panel" aria-live="polite">
-        <h2>Service status</h2>
-        <p id="status" class="status status--pending">Checking…</p>
-        <dl id="status-detail" class="detail" hidden></dl>
-      </section>
+      <main class="stage">
+        <div id="map" class="map" role="application" aria-label="Flood risk map of the pilot area">
+          <noscript>
+            <p class="noscript">
+              Accra Flood Watch needs JavaScript to draw the flood risk map. For official
+              warnings, contact NADMO or the Ghana Meteorological Agency.
+            </p>
+          </noscript>
+        </div>
 
-      <section class="panel panel--muted">
-        <h2>Coming next</h2>
-        <ul class="roadmap">
-          <li>Risk map over the pilot grid</li>
-          <li>One-tap water depth reporting</li>
-          <li>Alerts for saved locations</li>
-          <li>Routes that avoid reported flooding</li>
-        </ul>
-      </section>
-    </main>
+        <section id="legend" class="legend" aria-label="What the colours and patterns mean"></section>
 
-    <footer class="disclaimer">
-      <p>
-        <strong>This is a community information tool, not an official warning service.</strong>
-        For official warnings consult NADMO and the Ghana Meteorological Agency.
-      </p>
-    </footer>
+        <!-- Fixed, thumb-reachable, and the largest target on the screen.
+             It is pressed one-handed, in the rain, under time pressure. -->
+        <button id="report-button" type="button" class="report-button">
+          <span class="report-button__icon" aria-hidden="true">＋</span>
+          <span class="report-button__label">Report water here</span>
+        </button>
+      </main>
+
+      <footer class="disclaimer">
+        <p>
+          <strong>This is a community information tool, not an official warning service.</strong>
+          For official warnings consult
+          <abbr title="National Disaster Management Organisation">NADMO</abbr> and the Ghana
+          Meteorological Agency.
+        </p>
+      </footer>
+    </div>
+
+    <div id="detail-sheet" class="sheet" role="dialog" aria-modal="false" aria-label="Flood risk detail" hidden>
+      <div class="sheet__panel">
+        <button type="button" class="sheet__close" aria-label="Close">Close</button>
+        <div class="sheet__body"></div>
+      </div>
+    </div>
+
+    <div id="report-sheet" class="sheet" role="dialog" aria-modal="true" aria-label="Report water depth" hidden>
+      <div class="sheet__panel">
+        <button type="button" class="sheet__close" aria-label="Close">Close</button>
+        <div class="sheet__body"></div>
+      </div>
+    </div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

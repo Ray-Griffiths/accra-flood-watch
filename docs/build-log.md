@@ -240,3 +240,118 @@ be checked against NADMO sources before the pilot goes live.**
 - DEM-derived risk overlay on the map (MapLibre + Amazon Location GeoMaps).
 - `getRisk` / `getReports` handlers reading the seeded grid.
 - Then: one-tap reporting, hourly scoring, notifications, safe routing.
+
+---
+
+## Day 3 — 2026-09-21 — The map, the risk overlay and one-tap reporting
+
+### Shipped
+
+The public URL now shows the thing the project is actually for: a street-level
+flood risk map of Circle, Kaneshie and Avenor, with a two-tap water depth
+report and a plain-language explanation behind every cell.
+
+- **Backend deployed.** `getRisk`, `getReports`, `submitReport` and `getConfig`
+  are live behind CloudFront. All 24 backend tests pass; `tsc --noEmit` clean.
+- **Tables migrated to the geohash-prefix key schema.** The deploy replaced all
+  three (the explicit `TableName` was removed precisely so this could happen),
+  and the 1,140 terrain cells were re-seeded into the new `RiskCells` table.
+- **Map overlay** — MapLibre GL over Amazon Location GeoMaps, risk cells drawn
+  as polygons beneath the basemap's label layers so street names stay readable
+  through the overlay.
+- **Two-tap reporting** with device geolocation, falling back to the map centre
+  when the permission is refused rather than dead-ending.
+- **Edge tile caching verified working** (see below).
+
+### Verified end to end, against production
+
+| Check | Result |
+|---|---|
+| `GET /api/health` | `status: ok` |
+| `GET /api/risk?bbox=` | 1,140-cell grid, terrain scores + explanations |
+| `POST /api/reports` valid | `201`, `level: reported` |
+| `POST /api/reports` ×2 same cell | `201`, `level: confirmed`, `recentReports: 2` |
+| `POST /api/reports` outside pilot area | `422` with a sentence, not a stack trace |
+| `POST /api/reports` bad depth | `400` |
+| Tile via CloudFront `/v2/*` | `200`, `x-cache: Hit from cloudfront` |
+
+The confirmation override works as specified: two independent reports within
+three hours set `confirmed` regardless of the computed score.
+
+### The tile-cost bug that would have gone unnoticed
+
+The Amazon Location style descriptor returns **absolute**
+`maps.geo.eu-west-1.amazonaws.com` URLs for tiles, glyphs and sprites. Left
+alone, every tile request would have gone straight to Amazon Location and
+bypassed the CloudFront cache behaviour entirely — the single most expensive
+line item in the system, silently uncached, and nothing would have looked
+broken.
+
+Fixed with a `transformRequest` that rewrites every Amazon Location URL back to
+this origin. Confirmed: repeat tile requests now return
+`x-cache: Hit from cloudfront`.
+
+The same rewrite made the tiles same-origin, which meant the service worker's
+cache-first branch would have started caching tiles without bound. `/v2/*` is
+now excluded from it alongside `/api/*`. Full offline tile caching is out of
+scope; the edge is where tile caching belongs.
+
+### MapLibre GL v6 does not work with this style — pinned to v5
+
+`maplibre-gl@6.10.0` never fires `load` and never requests a single tile
+against the Amazon Location Standard style. The style parses (160 layers, the
+source resolves, `_sourceLoaded: true`, WebGL2 context live, no errors on any
+channel) but the covering-tile computation never produces anything, so no tile
+or glyph request is ever made and the canvas is never painted.
+
+It reproduces with the stock MapLibre demo style and with no custom map options
+at all, so it is not this project's code, the AWS style, or the API key.
+
+**`maplibre-gl@5.24.0` renders correctly.** Pinned to `^5.24.0`.
+
+A false lead cost time and is worth recording: after downgrading, Vite kept
+serving its cached v6 pre-bundle from an already-running dev server, so the
+first "v5 also fails" and "the demo style also fails" results were both
+measured against v6. The giveaway was `map.transform` being `undefined` — a v6
+API shape — while `node_modules` held v5. **When bisecting a dependency under
+Vite, restart the dev server and clear `node_modules/.vite`, then assert the
+version from inside the page before trusting any result.**
+
+### Accessibility, deliberately
+
+Risk levels are encoded three independent ways, because a map whose only
+warning channel is hue fails exactly the people it was built for — outdoors, in
+glare, possibly colour-blind:
+
+- colour (lightness-ordered, so the ramp survives deuteranopia),
+- **texture** — sparse dots, diagonal hatch, cross-hatch, solid — generated to a
+  canvas at load time and registered as fill patterns,
+- **the word itself**, on the cell and in the legend.
+
+The legend repeats the map's own texture rather than showing a plain colour
+chip, so it teaches the pattern and not only the colour.
+
+### Honest state
+
+- The status banner reads **"Terrain only — no rainfall forecast yet."** and
+  will keep saying so until the hourly scoring job exists. What is on screen is
+  terrain susceptibility, and presenting it as a live forecast would overstate
+  what the map knows.
+- The 8 historical flood points remain **unverified** and still override the
+  terrain model in their cells. Unchanged from Day 2; still to be checked
+  against NADMO sources.
+- Test reports created during verification were deleted from the `Reports`
+  table afterwards. A fake "impassable" at Circle is precisely the false
+  warning this project must never display.
+- The pre-migration `accra-flood-watch-reports` table was retained by
+  `DeletionPolicy: Retain` and is now an empty orphan. Harmless and free, but
+  it should be deleted by hand.
+- Bundle is 291 kB gzipped, nearly all MapLibre. Heavy for a low-end Android on
+  a poor connection, and the most obvious next optimisation.
+
+### Next
+
+- Hourly `scoreRisk` job: forecast rainfall, real scores, the `updatedAt` the
+  interface is already prepared to display.
+- `saveWatch` and web push for saved locations.
+- `calculateSafeRoute` with `GeoRoutes.CalculateRoutes` and `Avoid.Areas`.

@@ -11,6 +11,9 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    // Imports are written with explicit .ts extensions so the source reads the
+    // same as it runs. Vite resolves them; tsc only needs permission.
+    "allowImportingTsExtensions": true,
     "noEmit": true
   },
   "include": ["src/**/*.ts", "vite.config.ts"]

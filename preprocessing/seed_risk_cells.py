@@ -70,9 +70,12 @@ def seed(dry_run: bool = False) -> None:
 
     written = 0
     # batch_writer handles batching, retries and unprocessed-item resubmission.
-    with table.batch_writer(overwrite_by_pkeys=["cell"]) as batch:
+    with table.batch_writer(overwrite_by_pkeys=["cellPrefix", "cell"]) as batch:
         for cell in cells:
             item = {
+                # Partition by prefix, sort by full cell: one Query returns
+                # every grid cell in ~1.2km x 0.6km.
+                "cellPrefix": cell["cell"][: config.PREFIX_PRECISION],
                 "cell": cell["cell"],
                 "susceptibility": Decimal(str(cell["susceptibility"])),
                 "hand": Decimal(str(cell["hand"])),

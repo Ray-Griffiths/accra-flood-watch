@@ -1,5 +1,5 @@
-import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { json } from "../lib/http";
+﻿import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
+import { json } from "../lib/http.ts";
 
 /**
  * Liveness probe. Targeted by an external uptime check for the duration of the

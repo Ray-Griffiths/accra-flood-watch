@@ -1,7 +1,16 @@
 /*
- * Built for a mid-range Android phone, outdoors, in rain, in bright light.
- * High contrast, large touch targets, system fonts so nothing blocks render.
+ * Built for a mid-range Android phone, outdoors, in rain, in bright light,
+ * held in one hand under time pressure.
+ *
+ * Consequences that run through everything below:
+ *   - high contrast, because the screen is competing with the sky
+ *   - large targets, because the other hand is holding an umbrella
+ *   - system fonts, because a webfont is a render-blocking round trip on a
+ *     connection that is already struggling
+ *   - meaning never carried by colour alone
  */
+
+@import "maplibre-gl/dist/maplibre-gl.css";
 
 :root {
   --ink: #10242e;
@@ -10,13 +19,22 @@
   --surface: #ffffff;
   --line: #d6dee2;
   --brand: #0b3d5c;
+
   --ok: #1a6b3c;
   --ok-bg: #e4f4ea;
+  --warn: #6b4a0b;
+  --warn-bg: #fbf0d9;
   --error: #9a2318;
   --error-bg: #fbe9e7;
-  --pending: #6b5a1a;
-  --pending-bg: #fbf3d9;
+  --pending: #3c4f59;
+  --pending-bg: #e8edf0;
+
+  --danger: #6b0000;
   --radius: 10px;
+
+  /* Keeps the report button clear of the iOS home indicator and Android
+     gesture bar, where it would otherwise be unpressable. */
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 *,
@@ -25,118 +43,479 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  padding: 0;
   background: var(--paper);
   color: var(--ink);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 17px;
   line-height: 1.5;
   -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
 }
 
-#app {
-  max-width: 34rem;
-  margin: 0 auto;
-  padding: 1.5rem 1.25rem 1rem;
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* ---------------------------------------------------------------- masthead */
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.7rem 1rem;
+  background: var(--brand);
+  color: #ffffff;
 }
 
 .masthead h1 {
   margin: 0;
-  font-size: 1.6rem;
+  font-size: 1.15rem;
   letter-spacing: -0.01em;
-  color: var(--brand);
 }
 
 .tagline {
-  margin: 0.35rem 0 1.75rem;
-  color: var(--ink-soft);
+  margin: 0;
+  font-size: 0.82rem;
+  color: #cfe0ea;
 }
 
-.panel {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 1.1rem 1.25rem;
-  margin-bottom: 1rem;
-}
-
-.panel--muted {
-  background: transparent;
-  border-style: dashed;
-}
-
-.panel h2 {
-  margin: 0 0 0.6rem;
-  font-size: 0.78rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--ink-soft);
-}
-
-/* Status carries a text label as well as colour, so it stays readable in
-   glare and for colour-blind users. */
+/* Status carries a word as well as a colour: it is read in glare, and by
+   people who cannot separate the hues. */
 .status {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: 0.85rem;
   font-weight: 600;
-  padding: 0.5rem 0.75rem;
-  border-radius: 6px;
-  display: inline-block;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  background: var(--pending-bg);
+  color: var(--pending);
 }
 
 .status--ok {
-  color: var(--ok);
   background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.status--warn {
+  background: var(--warn-bg);
+  color: var(--warn);
 }
 
 .status--error {
-  color: var(--error);
   background: var(--error-bg);
+  color: var(--error);
 }
 
-.status--pending {
-  color: var(--pending);
-  background: var(--pending-bg);
+/* ------------------------------------------------------------------- stage */
+
+.stage {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 60vh;
 }
 
-.detail {
+.map {
+  flex: 1;
+  min-height: 55vh;
+  background: #e9eef0;
+}
+
+.noscript {
+  margin: 0;
+  padding: 1.5rem;
+  color: var(--ink);
+}
+
+/* Muted so the map underneath stays the subject. */
+.maplibregl-ctrl-attrib {
+  font-size: 10px;
+}
+
+/* ------------------------------------------------------------------ legend */
+
+.legend {
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  padding: 0.6rem 1rem 0.7rem;
+}
+
+.legend__list {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.3rem 1rem;
-  margin: 1rem 0 0;
-  font-size: 0.92rem;
-}
-
-.detail dt {
-  color: var(--ink-soft);
-}
-
-.detail dd {
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 0.4rem 1rem;
   margin: 0;
-  font-variant-numeric: tabular-nums;
+  padding: 0;
+  list-style: none;
 }
 
-.roadmap {
-  margin: 0;
-  padding-left: 1.1rem;
+.legend__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+/* The swatch repeats the map's own texture, so the legend teaches the
+   pattern and not only the colour. */
+.legend__swatch {
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 4px;
+  border: 1.5px solid var(--level-colour);
+  background-color: color-mix(in srgb, var(--level-colour) 22%, transparent);
+  background-repeat: repeat;
+}
+
+.legend__swatch--low {
+  background-image: radial-gradient(var(--level-colour) 1px, transparent 1.2px);
+  background-size: 6px 6px;
+}
+
+.legend__swatch--watch {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--level-colour) 0 1.5px,
+    transparent 1.5px 5px
+  );
+}
+
+.legend__swatch--high {
+  background-image:
+    repeating-linear-gradient(45deg, var(--level-colour) 0 1.5px, transparent 1.5px 5px),
+    repeating-linear-gradient(-45deg, var(--level-colour) 0 1.5px, transparent 1.5px 5px);
+}
+
+.legend__swatch--confirmed {
+  background-color: var(--level-colour);
+}
+
+.legend__text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.legend__text strong {
+  font-size: 0.83rem;
+}
+
+.legend__text span {
   color: var(--ink-soft);
+  font-size: 0.75rem;
 }
 
-.roadmap li {
-  margin-bottom: 0.3rem;
+/* ----------------------------------------------------------- report button */
+
+.report-button {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(0.9rem + var(--safe-bottom));
+  z-index: 20;
+
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  /* Comfortably above the 48px minimum: this is pressed with a wet thumb. */
+  min-height: 60px;
+  padding: 0 1.6rem;
+  border: none;
+  border-radius: 999px;
+
+  background: var(--danger);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 1.05rem;
+  font-weight: 700;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 30%);
+  cursor: pointer;
 }
 
+.report-button:active {
+  transform: translateX(-50%) scale(0.97);
+}
+
+.report-button:disabled {
+  background: var(--ink-soft);
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.report-button__icon {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+/* -------------------------------------------------------------- disclaimer */
+
+/* Stated on every view. Not a footnote: it is the boundary of what this
+   project is entitled to claim. */
+/* The trailing padding is what the fixed report button floats over. Without
+   it the button sits on top of the words "not an official warning service",
+   which is the one sentence on this page that must never be obscured. */
 .disclaimer {
-  max-width: 34rem;
-  margin: 0 auto;
-  padding: 0 1.25rem 2.5rem;
+  padding: 0.9rem 1rem calc(5.75rem + var(--safe-bottom));
+  background: var(--paper);
+  border-top: 1px solid var(--line);
   color: var(--ink-soft);
-  font-size: 0.88rem;
+  font-size: 0.8rem;
+}
+
+.disclaimer p {
+  margin: 0;
 }
 
 .disclaimer strong {
   color: var(--ink);
+}
+
+/* ------------------------------------------------------------------ sheets */
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgb(8 24 32 / 45%);
+}
+
+.sheet[hidden] {
+  display: none;
+}
+
+.sheet__panel {
+  width: min(34rem, 100%);
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border-radius: 16px 16px 0 0;
+  padding: 1rem 1.15rem calc(1.25rem + var(--safe-bottom));
+  box-shadow: 0 -8px 30px rgb(0 0 0 / 25%);
+}
+
+.sheet__close {
+  display: block;
+  margin-left: auto;
+  min-height: 44px;
+  padding: 0 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sheet__heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.3rem;
+}
+
+.sheet__title {
+  margin: 0.3rem 0 0.5rem;
+  font-size: 1.25rem;
+}
+
+.level-badge {
+  display: inline-block;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  border: 2px solid var(--level-colour);
+  background: color-mix(in srgb, var(--level-colour) 14%, transparent);
+  color: var(--level-colour);
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sheet__score {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The sentence that justifies the colour. Set larger than the supporting
+   detail because it is the part that has to be read. */
+.sheet__explanation {
+  margin: 0.85rem 0 0;
+  font-size: 1.02rem;
+}
+
+.sheet__reports {
+  margin-top: 1rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius);
+  background: var(--error-bg);
+  border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
+}
+
+.sheet__reports h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+  color: var(--danger);
+}
+
+.sheet__reports ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.9rem;
+}
+
+.sheet__provenance {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.3rem 1rem;
+  margin: 1rem 0 0;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+
+.sheet__provenance dt {
+  color: var(--ink-soft);
+}
+
+.sheet__provenance dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet__where {
+  margin: 0 0 0.9rem;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+.sheet__where--fallback {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.sheet__privacy {
+  margin: 1rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.sheet__pending,
+.sheet__message {
+  margin: 0.8rem 0 1rem;
+  font-size: 1.02rem;
+}
+
+.sheet__message--error {
+  color: var(--error);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------- depth choices */
+
+.depth-choices {
+  display: grid;
+  gap: 0.6rem;
+}
+
+/* Each choice is a full-width row rather than a tile: one column is easier
+   to hit accurately than a grid when the phone is moving. */
+.depth-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  min-height: 64px;
+  padding: 0.7rem 1rem;
+  border: 2px solid var(--line);
+  border-left-width: 8px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.depth-choice:active {
+  background: var(--paper);
+}
+
+/* Depth is ordered by severity, and the left edge widens with it -- another
+   non-colour cue for which option is which. */
+.depth-choice--ankle {
+  border-left-color: #2b83ba;
+}
+
+.depth-choice--knee {
+  border-left-color: #e08214;
+}
+
+.depth-choice--waist {
+  border-left-color: #d7301f;
+}
+
+.depth-choice--impassable {
+  border-left-color: var(--danger);
+}
+
+.depth-choice__label {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.depth-choice__hint {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.button {
+  min-height: 52px;
+  padding: 0 1.4rem;
+  border: none;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.button--primary {
+  background: var(--brand);
+  color: #ffffff;
+}
+
+/* --------------------------------------------------------------- a11y */
+
+:where(button, [href], input, select, textarea):focus-visible {
+  outline: 3px solid #ffb703;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

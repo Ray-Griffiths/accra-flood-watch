@@ -73,6 +73,63 @@ Resources:
               Bool:
                 aws:SecureTransport: false
 
+  # ----------------------------------------------------------------------------
+  # Map tiles. The browser holds a key scoped to GeoMaps only -- never Places
+  # or Routes, which cost materially more per request and are called solely
+  # from Lambda with IAM credentials. Anyone can read this key out of the page
+  # source, so what it can do is what limits the damage.
+  #
+  # AllowActions must be `geo-maps:*` rather than an explicit list including
+  # GetStyleDescriptor: that is a real GeoMaps API operation but NOT a valid
+  # API-key action, and naming it makes CreateKey fail with an AccessDenied
+  # whose action name is empty. Through CloudFormation the same failure
+  # surfaces only as "Access denied for operation 'AWS::Location::APIKey'".
+  # Verified by probing CreateKey directly with each action in turn.
+  # ----------------------------------------------------------------------------
+  MapApiKey:
+    Type: AWS::Location::APIKey
+    Properties:
+      KeyName: !Sub "${AWS::StackName}-maps"
+      Description: Browser map tile rendering. GeoMaps only.
+      NoExpiry: true
+      Restrictions:
+        AllowActions:
+          - geo-maps:*
+        AllowResources:
+          - !Sub "arn:${AWS::Partition}:geo-maps:${AWS::Region}::provider/default"
+
+  # Base map tiles for a fixed city do not change from one hour to the next, so
+  # they are cached at the edge for a month. Section 16 of the project plan
+  # identifies tile requests as the dominant cost once usage grows: at 10,000
+  # users this line item is ~$160/month uncached and a small fraction of that
+  # behind this policy. Designed in from the start rather than discovered after
+  # the first large bill.
+  TileCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-tiles"
+        Comment: Long-lived caching for Amazon Location map tiles.
+        DefaultTTL: 2592000 # 30 days
+        MaxTTL: 31536000
+        MinTTL: 86400
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            # The key and style variant must reach the origin and must form
+            # part of the cache key, or every variant would collide.
+            QueryStringBehavior: whitelist
+            QueryStrings:
+              - key
+              - color-scheme
+              - variant
+              - political-view
+
   OriginAccessControl:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
@@ -107,6 +164,11 @@ Resources:
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]
+          - Id: geo-maps
+            DomainName: !Sub "maps.geo.${AWS::Region}.amazonaws.com"
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
         DefaultCacheBehavior:
           TargetOriginId: s3-web
           ViewerProtocolPolicy: redirect-to-https
@@ -124,6 +186,15 @@ Resources:
             AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
             CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # Managed-CachingDisabled
             OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewerExceptHostHeader
+          # Amazon Location serves tiles and style descriptors under /v2/*.
+          # Matching that prefix means CloudFront forwards the path unchanged,
+          # with no rewriting function needed.
+          - PathPattern: /v2/*
+            TargetOriginId: geo-maps
+            ViewerProtocolPolicy: https-only
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref TileCachePolicy
         CustomErrorResponses:
           # Makes client-side routing work against a static origin.
           - ErrorCode: 403
@@ -139,9 +210,18 @@ Resources:
           CloudFrontDefaultCertificate: true
 
   # ----------------------------------------------------------------------------
-  # Persistence. Every table is partitioned by geohash cell, which is what makes
-  # every read a single query: a geohash prefix describes a contiguous area, so
-  # a map viewport resolves to a small set of prefixes. No scan, ever.
+  # Persistence.
+  #
+  # The grid is geohash-7 (~152m). Tables that answer "what is in this map
+  # viewport" are partitioned by the geohash-6 PREFIX (~1.2km x 0.6km) and
+  # sorted by the full cell, so a viewport resolves to a handful of prefixes
+  # and each one is a single Query returning at most 32 cells. Partitioning by
+  # the full cell instead would force a BatchGetItem over every key in view.
+  # No scan, ever.
+  #
+  # Table names are deliberately auto-generated. An explicit name makes any
+  # key-schema change fail, because CloudFormation must create the replacement
+  # before deleting the original and the two would collide on the name.
   # ----------------------------------------------------------------------------
   RiskCellsTable:
     Type: AWS::DynamoDB::Table
@@ -149,7 +229,6 @@ Resources:
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      TableName: !Sub "${AWS::StackName}-risk-cells"
       BillingMode: PAY_PER_REQUEST
       SSESpecification:
         # Encrypted at rest either way. `false` selects the AWS-owned key,
@@ -159,11 +238,15 @@ Resources:
         # customer-managed key.
         SSEEnabled: false
       AttributeDefinitions:
+        - AttributeName: cellPrefix
+          AttributeType: S
         - AttributeName: cell
           AttributeType: S
       KeySchema:
-        - AttributeName: cell
+        - AttributeName: cellPrefix
           KeyType: HASH
+        - AttributeName: cell
+          KeyType: RANGE
 
   ReportsTable:
     Type: AWS::DynamoDB::Table
@@ -172,7 +255,6 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      TableName: !Sub "${AWS::StackName}-reports"
       BillingMode: PAY_PER_REQUEST
       SSESpecification:
         # See RiskCellsTable. Reports carry no personal data by design: a
@@ -180,13 +262,15 @@ Resources:
         # linking two reports from the same device.
         SSEEnabled: false
       AttributeDefinitions:
-        - AttributeName: cell
+        - AttributeName: cellPrefix
           AttributeType: S
         - AttributeName: reportId
           AttributeType: S
       KeySchema:
-        - AttributeName: cell
+        - AttributeName: cellPrefix
           KeyType: HASH
+        # reportId is prefixed with the submission timestamp, so the sort key
+        # orders reports by age within an area for free.
         - AttributeName: reportId
           KeyType: RANGE
       TimeToLiveSpecification:
@@ -207,7 +291,6 @@ Resources:
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      TableName: !Sub "${AWS::StackName}-watchers"
       BillingMode: PAY_PER_REQUEST
       SSESpecification:
         # See RiskCellsTable. Holds an opaque browser push endpoint and a
@@ -219,9 +302,10 @@ Resources:
         - AttributeName: subscriptionId
           AttributeType: S
       KeySchema:
-        # Keyed by cell rather than by user, so that when a cell turns red the
-        # scoring function finds everyone who needs telling in one query.
-        # Keying by user would force a scan at exactly the wrong moment.
+        # Keyed by the exact watched cell rather than by user, so that when a
+        # cell turns red the scoring function finds everyone who needs telling
+        # in one query. Keying by user would force a scan at exactly the wrong
+        # moment.
         - AttributeName: cell
           KeyType: HASH
         - AttributeName: subscriptionId
@@ -285,6 +369,176 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${HealthFunction}"
+      RetentionInDays: 7
+
+  # ----------------------------------------------------------------------------
+  # Read path. Neither function has any write permission at all.
+  # ----------------------------------------------------------------------------
+  GetRiskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/getRisk.handler
+      Description: Risk cells for a map viewport.
+      Environment:
+        Variables:
+          RISK_CELLS_TABLE: !Ref RiskCellsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RiskCellsTable
+      Events:
+        GetRisk:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /api/risk
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/getRisk.ts
+
+  GetRiskFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetRiskFunction}"
+      RetentionInDays: 7
+
+  GetReportsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/getReports.handler
+      Description: Active community reports for a map viewport.
+      Environment:
+        Variables:
+          REPORTS_TABLE: !Ref ReportsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ReportsTable
+      Events:
+        GetReports:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /api/reports
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/getReports.ts
+
+  GetReportsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetReportsFunction}"
+      RetentionInDays: 7
+
+  # ----------------------------------------------------------------------------
+  # Write path. Unauthenticated by design, so it is the abuse surface: it gets
+  # reserved concurrency of its own so a flood of submissions during a storm
+  # cannot exhaust account concurrency and starve the read path.
+  #
+  # It can write Reports and read RiskCells. It deliberately cannot read
+  # Watchers -- notification dispatch belongs to the scoring function.
+  # ----------------------------------------------------------------------------
+  SubmitReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/submitReport.handler
+      Description: Accept a one-tap water depth report.
+      # NOTE: the project plan calls for reserved concurrency on the write path
+      # so a storm-time flood of submissions cannot exhaust account concurrency
+      # and starve the read path. It is commented out because this account is
+      # still on the new-account default of 10 total concurrent executions, and
+      # any reservation drops unreserved below the required minimum of 10.
+      #
+      # Restore this once the Lambda concurrency quota (L-B99A9384) is raised.
+      # Until then the read and write paths share a very small pool, which is
+      # the single biggest resilience gap in the deployment.
+      # ReservedConcurrentExecutions: 20
+      Environment:
+        Variables:
+          REPORTS_TABLE: !Ref ReportsTable
+          RISK_CELLS_TABLE: !Ref RiskCellsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ReportsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RiskCellsTable
+      Events:
+        SubmitReport:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /api/reports
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/submitReport.ts
+
+  SubmitReportFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SubmitReportFunction}"
+      RetentionInDays: 7
+
+  # ----------------------------------------------------------------------------
+  # Client configuration. The map key is served rather than baked into the
+  # bundle, so rotating it does not require rebuilding and redeploying the PWA.
+  # ----------------------------------------------------------------------------
+  GetConfigFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/getConfig.handler
+      Description: Client runtime configuration, including the map tile key.
+      Environment:
+        Variables:
+          # CloudFormation does not expose the key value as an attribute, so
+          # the handler resolves it at runtime via DescribeKey and caches it
+          # for the life of the execution environment.
+          MAP_API_KEY_NAME: !Sub "${AWS::StackName}-maps"
+          MAP_STYLE: Standard
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: geo:DescribeKey
+              Resource: !GetAtt MapApiKey.KeyArn
+      Events:
+        GetConfig:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /api/config
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/getConfig.ts
+
+  GetConfigFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetConfigFunction}"
       RetentionInDays: 7
 
 Outputs:

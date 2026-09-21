@@ -9,6 +9,7 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "noEmit": true

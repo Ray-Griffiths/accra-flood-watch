@@ -1,14 +1,23 @@
 /*
- * Skeleton service worker.
+ * Caches the application shell so the app opens and shows something useful
+ * with no connection.
  *
- * Today it caches only the application shell, so the app opens and shows
- * something useful with no connection. It deliberately does NOT cache
- * /api/* responses yet: stale risk data shown without a staleness label
- * would be worse than no data at all. Cached risk data with an explicit
- * "last updated" label arrives alongside the map.
+ * Two deliberate exclusions:
+ *
+ *   /api/*  Network-first with no fallback. A flood warning must never be
+ *           answered out of a cache without the user being told it is old.
+ *           Last-known risk IS kept, but in localStorage by cache.ts, which
+ *           hands it back with an age label the interface is required to
+ *           print. Serving it invisibly from here would strip that label.
+ *
+ *   /v2/*   Amazon Location tiles, glyphs and sprites. They are same-origin
+ *           because CloudFront proxies them, so without this they would fall
+ *           into the cache-first branch below and grow without bound. Full
+ *           offline tile caching is out of scope; the CloudFront edge cache
+ *           is where tile caching belongs.
  */
 
-const SHELL_CACHE = "afw-shell-v1";
+const SHELL_CACHE = "afw-shell-v2";
 const SHELL_ASSETS = ["/", "/index.html", "/manifest.webmanifest", "/icons/icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -39,9 +48,8 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // The API is always network-first with no fallback. A flood warning must
-  // never be answered from a cache without the user being told it is old.
   if (url.pathname.startsWith("/api/")) return;
+  if (url.pathname.startsWith("/v2/")) return;
 
   // Navigations: network first so updates land promptly, shell as fallback.
   if (request.mode === "navigate") {

@@ -24,6 +24,16 @@ BUFFER_DEGREES = 0.015
 # reports exist means migrating the Reports table.
 GEOHASH_PRECISION = 7
 
+# Partition-key resolution (~1.2km x 0.6km, holding 32 grid cells).
+#
+# Tables that answer "what is in this viewport" are partitioned by this prefix
+# and sorted by the full cell, so a viewport resolves to a handful of prefixes
+# and each is a single Query. Partitioning by the full cell would turn a
+# viewport read into a BatchGetItem over every key in view.
+#
+# Mirrored by PREFIX_PRECISION in backend/src/lib/pilot.ts.
+PREFIX_PRECISION = 6
+
 # ---------------------------------------------------------------------------
 # Data sources
 # ---------------------------------------------------------------------------

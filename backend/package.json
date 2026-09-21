@@ -6,9 +6,12 @@
   "license": "MIT",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types \"src/**/*.test.ts\""
+    "test": "node --test --experimental-strip-types src/**/*.test.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.716.0",
+    "@aws-sdk/client-location": "^3.716.0",
+    "@aws-sdk/lib-dynamodb": "^3.716.0",
     "esbuild": "^0.24.2"
   },
   "devDependencies": {
