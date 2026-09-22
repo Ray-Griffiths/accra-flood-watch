@@ -3,7 +3,7 @@ import { DeleteCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 
 import { documents, requireTable } from "../lib/dynamo.ts";
 import { json, problem } from "../lib/http.ts";
-import { cellFor, isInsidePilotArea } from "../lib/pilot.ts";
+import { cellFor, describeCoverage, isInsideCoverage } from "../lib/pilot.ts";
 import { parseSubscription, subscriptionId, type PushSubscription } from "../lib/subscription.ts";
 
 /**
@@ -63,8 +63,8 @@ function parseRequest(body: string | undefined): WatchRequest | string {
   if (!Number.isFinite(raw.latitude) || !Number.isFinite(raw.longitude)) {
     return "latitude and longitude must be numbers.";
   }
-  if (!isInsidePilotArea(raw.latitude, raw.longitude)) {
-    return "That place is outside the Circle, Kaneshie and Avenor pilot area.";
+  if (!isInsideCoverage(raw.latitude, raw.longitude)) {
+    return `That place is outside the area this covers (${describeCoverage()}).`;
   }
 
   const subscription = parseSubscription(raw.subscription);

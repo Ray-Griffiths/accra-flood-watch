@@ -18,7 +18,7 @@
  */
 
 import { ApiError, submitReport, type Depth, type SubmitResult } from "./api.ts";
-import { isInsidePilotArea, type Bbox } from "./pilot.ts";
+import { isInsideCoverage, type Coverage } from "./pilot.ts";
 
 const DEPTH_CHOICES: Array<{ depth: Depth; label: string; hint: string }> = [
   { depth: "ankle", label: "Ankle deep", hint: "Passable on foot" },
@@ -52,7 +52,7 @@ export class ReportFlow {
     root: HTMLElement,
     private readonly mapCentre: () => [number, number],
     private readonly onAccepted: (result: SubmitResult) => void,
-    private readonly pilotBbox: Bbox,
+    private readonly coverage: Coverage,
   ) {
     this.root = root;
     this.body = root.querySelector<HTMLElement>(".sheet__body")!;
@@ -102,7 +102,7 @@ export class ReportFlow {
       // to the map centre keeps the report possible — somebody reporting a
       // junction they can see on screen is still a valid report — but the
       // sheet has to say which position it is about to send.
-      this.origin = isInsidePilotArea(this.pilotBbox, longitude, latitude)
+      this.origin = isInsideCoverage(this.coverage.areas, longitude, latitude)
         ? { latitude, longitude, source: "device", accuracyMetres: accuracy }
         : { ...fallback, source: "outside-area" };
     } catch {
@@ -130,7 +130,7 @@ export class ReportFlow {
         : "Using your location.";
     } else if (this.origin?.source === "outside-area") {
       where.textContent =
-        "You are outside the area this map covers (Circle, Kaneshie and Avenor). " +
+        `You are outside the area this map covers (${this.coverage.description}). ` +
         "This will be reported at the centre of the map — move the map to the place you mean first.";
       where.classList.add("sheet__where--fallback");
     } else {

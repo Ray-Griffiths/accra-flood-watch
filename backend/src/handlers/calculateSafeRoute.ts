@@ -4,13 +4,9 @@ import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 
 import { documents, requireTable } from "../lib/dynamo.ts";
 import { boundingBox, boxesOnPath, type Position } from "../lib/geometry.ts";
-import { bounds, cellsCovering, type Bounds } from "../lib/geohash.ts";
+import { bounds, type Bounds } from "../lib/geohash.ts";
 import { json, problem } from "../lib/http.ts";
-import {
-  MAX_PREFIXES_PER_REQUEST,
-  PREFIX_PRECISION,
-  isInsidePilotArea,
-} from "../lib/pilot.ts";
+import { describeCoverage, isInsideCoverage, prefixesForCorridor } from "../lib/pilot.ts";
 import type { DepthLevel } from "../lib/risk.ts";
 import {
   classifyHazards,
@@ -95,11 +91,11 @@ function parseRequest(body: string | undefined): RouteRequest | string {
   // Flooding is only known inside the pilot grid, so a route leaving it cannot
   // be vouched for. Saying that is better than returning a route whose second
   // half was checked against nothing.
-  if (!isInsidePilotArea(origin[1], origin[0])) {
-    return "The starting point is outside the Circle, Kaneshie and Avenor pilot area.";
+  if (!isInsideCoverage(origin[1], origin[0])) {
+    return `The starting point is outside the area this covers (${describeCoverage()}).`;
   }
-  if (!isInsidePilotArea(destination[1], destination[0])) {
-    return "The destination is outside the Circle, Kaneshie and Avenor pilot area.";
+  if (!isInsideCoverage(destination[1], destination[0])) {
+    return `The destination is outside the area this covers (${describeCoverage()}).`;
   }
 
   return { origin, destination, mode };
@@ -114,12 +110,16 @@ function parsePosition(value: unknown): Position | null {
   return [lon, lat];
 }
 
-/** Every cell and report in the corridor between the two points. */
-async function loadCorridor(corridor: Bounds): Promise<Hazard[]> {
-  const prefixes = cellsCovering(corridor, PREFIX_PRECISION).slice(
-    0,
-    MAX_PREFIXES_PER_REQUEST,
-  );
+/**
+ * Every cell and report in the corridor between the two points.
+ *
+ * Null means the corridor was too large to verify in full. The caller refuses
+ * the route on that rather than checking part of it: a route is only as safe
+ * as the least-inspected stretch of it.
+ */
+async function loadCorridor(corridor: Bounds): Promise<Hazard[] | null> {
+  const prefixes = prefixesForCorridor(corridor);
+  if (prefixes === null) return null;
   if (prefixes.length === 0) return [];
 
   const riskTable = requireTable("RISK_CELLS_TABLE");
@@ -244,6 +244,19 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   const corridor = boundingBox([parsed.origin, parsed.destination], CORRIDOR_PAD_DEGREES);
   const hazards = await loadCorridor(corridor);
+  if (hazards === null) {
+    // Refusing is the only honest answer. The alternative is a route whose
+    // middle was never checked, presented with the same confidence as one
+    // that was.
+    return json(200, {
+      found: false,
+      mode: parsed.mode,
+      reason: "no-route",
+      explanation:
+        "That trip is too long for this service to check for flooding end to end. " +
+        "Try a shorter journey, or check conditions along the way yourself.",
+    });
+  }
   const blocked = hazards.filter((hazard) => isHardBlock(hazard.reason));
 
   // The direct route is calculated only when there is something to avoid, so

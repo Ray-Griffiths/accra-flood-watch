@@ -29,9 +29,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return problem(400, "bbox must be west,south,east,north in degrees");
   }
 
-  const prefixes = prefixesForViewport(box);
+  const { prefixes, truncated } = prefixesForViewport(box);
   if (prefixes.length === 0) {
-    return json(200, { reports: [], outsidePilotArea: true });
+    return json(200, { reports: [], outsideCoverage: true, outsidePilotArea: true });
   }
 
   const table = requireTable("REPORTS_TABLE");
@@ -86,6 +86,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   return json(200, {
     reports,
     reportCount: reports.length,
+    truncated,
     generatedAt: new Date().toISOString(),
   });
 };

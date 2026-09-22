@@ -23,7 +23,7 @@ import {
   type RouteResponse,
   type TravelMode,
 } from "./api.ts";
-import { isInsidePilotArea, type Bbox } from "./pilot.ts";
+import { isInsideCoverage, type Coverage } from "./pilot.ts";
 
 export type RouteState = "idle" | "picking" | "calculating" | "shown";
 
@@ -56,7 +56,7 @@ export class RouteFlow {
   constructor(
     root: HTMLElement,
     private readonly callbacks: RouteFlowCallbacks,
-    private readonly pilotBbox: Bbox,
+    private readonly coverage: Coverage,
   ) {
     this.root = root;
     this.body = root.querySelector<HTMLElement>(".sheet__body")!;
@@ -118,12 +118,12 @@ export class RouteFlow {
         });
       });
       // Only adopt it if the user has not already tapped and sent, and only
-      // if it is somewhere this project covers. A fix from outside the pilot
-      // area is a real position that the route service will refuse, so
+      // if it is somewhere this project covers. A fix from outside coverage
+      // is a real position that the route service will refuse, so
       // adopting it turns every routing attempt into a 400. The map centre is
       // inside the area by construction, so it stands instead.
       const [longitude, latitude] = [position.coords.longitude, position.coords.latitude];
-      if (this.state === "picking" && isInsidePilotArea(this.pilotBbox, longitude, latitude)) {
+      if (this.state === "picking" && isInsideCoverage(this.coverage.areas, longitude, latitude)) {
         this.origin = [longitude, latitude];
         this.originFromDevice = true;
       }

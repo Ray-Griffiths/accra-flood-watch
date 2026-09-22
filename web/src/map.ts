@@ -43,7 +43,9 @@ export const RISK_LAYERS = {
 /** Labels use the basemap's own font stack; anything else renders as blank. */
 const FONT_BOLD = ["Amazon Ember Bold", "Noto Sans Bold"];
 
-type Bbox = [number, number, number, number];
+// Shared with the pre-map viewport maths so the two cannot disagree.
+import { type Bbox } from "./viewport.ts";
+export type { Bbox };
 
 /** A calculated route, ready to draw. */
 export interface DrawnRoute {
@@ -63,6 +65,8 @@ export interface MapHandles {
   /** Frame a route so both ends are on screen at once. */
   frameRoute(route: DrawnRoute): void;
   viewportBbox(): Bbox;
+  /** Current zoom, so the caller can decide whether the overlay is meaningful. */
+  zoom(): number;
 }
 
 /**
@@ -82,24 +86,36 @@ function sameOriginLocationUrl(url: string, key: string): string | null {
   return rewritten.toString();
 }
 
+/**
+ * Opening zoom.
+ *
+ * Exported because the first risk request is computed for this zoom before
+ * the map exists. If the two ever disagreed, the opening fetch would ask for
+ * a different box from the one drawn.
+ */
+export const DEFAULT_ZOOM = 14;
+
 export function createMap(
   container: HTMLElement,
   styleUrl: string,
   apiKey: string,
-  pilotBbox: Bbox,
+  /** Framing only: the envelope around every covered area. */
+  envelope: Bbox,
   centre: [number, number],
 ): MapLibreMap {
-  const [west, south, east, north] = pilotBbox;
+  const [west, south, east, north] = envelope;
 
   const map = new MapLibreMap({
     container,
     style: styleUrl,
     center: centre,
-    zoom: 14,
+    zoom: DEFAULT_ZOOM,
     minZoom: 11,
     maxZoom: 18,
-    // Keeps the user inside the area the terrain grid actually covers, with
-    // enough slack to see where the pilot area ends.
+    // Keeps the user near the ground the terrain grid actually covers, with
+    // enough slack to see where coverage ends. Slack only -- the risk overlay
+    // itself is drawn from the areas, so panning into the margin shows the
+    // basemap and no overlay, which is the honest picture.
     maxBounds: [
       [west - 0.05, south - 0.05],
       [east + 0.05, north + 0.05],
@@ -352,6 +368,7 @@ export function installOverlays(map: MapLibreMap): MapHandles {
       const b = map.getBounds();
       return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     },
+    zoom: () => map.getZoom(),
   };
 }
 

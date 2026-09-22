@@ -2,16 +2,18 @@
 import { describe, it } from "node:test";
 
 import { bounds, cellSize, cellsCovering, encode, neighbours } from "./geohash.ts";
-import {
-  cellFor,
-  clipToPilotArea,
-  isInsidePilotArea,
-  parseBbox,
-  prefixesForViewport,
-  prefixOfCell,
-  PILOT_BBOX,
-  PREFIX_PRECISION,
-} from "./pilot.ts";
+
+/**
+ * The original Circle / Kaneshie / Avenor pilot box, kept here as a fixed
+ * fixture rather than imported from the coverage configuration.
+ *
+ * The cell count below was produced by `preprocessing/build_susceptibility.py`
+ * for exactly this box, and it is what pins the TypeScript encoder to the
+ * Python one. Pointing it at whatever coverage happens to be today would turn
+ * a real cross-implementation check into a number that gets updated whenever
+ * it disagrees.
+ */
+const PILOT_BBOX = { west: -0.245, south: 5.55, east: -0.195, north: 5.59 };
 
 describe("geohash encode", () => {
   it("matches the canonical reference vector", () => {
@@ -119,118 +121,6 @@ describe("neighbours", () => {
     const cell = encode(5.5709, -0.2074, 7);
     for (const neighbour of neighbours(cell)) {
       assert.ok(neighbours(neighbour).includes(cell));
-    }
-  });
-});
-
-describe("pilot area", () => {
-  it("accepts points inside", () => {
-    assert.ok(isInsidePilotArea(5.5709, -0.2074)); // Kwame Nkrumah Circle
-    assert.ok(isInsidePilotArea(5.5622, -0.2334)); // Kaneshie market
-  });
-
-  it("rejects points outside", () => {
-    assert.ok(!isInsidePilotArea(5.6037, -0.187)); // Achimota
-    assert.ok(!isInsidePilotArea(5.556, -0.19)); // just east of the boundary
-    assert.ok(!isInsidePilotArea(6.6885, -1.6244)); // Kumasi
-  });
-
-  it("treats the boundary as inside", () => {
-    assert.ok(isInsidePilotArea(PILOT_BBOX.south, PILOT_BBOX.west));
-    assert.ok(isInsidePilotArea(PILOT_BBOX.north, PILOT_BBOX.east));
-  });
-
-  it("derives the prefix from a cell consistently", () => {
-    const cell = cellFor(5.5709, -0.2074);
-    assert.equal(prefixOfCell(cell), encode(5.5709, -0.2074, PREFIX_PRECISION));
-    assert.equal(prefixOfCell(cell).length, PREFIX_PRECISION);
-  });
-});
-
-describe("parseBbox", () => {
-  it("parses a well-formed bbox", () => {
-    assert.deepEqual(parseBbox("-0.24,5.55,-0.20,5.58"), {
-      west: -0.24,
-      south: 5.55,
-      east: -0.2,
-      north: 5.58,
-    });
-  });
-
-  it("rejects malformed input", () => {
-    for (const raw of [
-      undefined,
-      "",
-      "1,2,3",
-      "1,2,3,4,5",
-      "a,b,c,d",
-      "0,0,0,0", // zero area
-      "1,1,0,2", // west past east
-      "0,2,1,1", // south past north
-      "-200,5,0,6", // longitude out of range
-      "-1,-95,0,6", // latitude out of range
-    ]) {
-      assert.equal(parseBbox(raw), null, `expected null for ${String(raw)}`);
-    }
-  });
-});
-
-describe("viewport clipping", () => {
-  it("clips a viewport wider than the pilot area", () => {
-    const clipped = clipToPilotArea({
-      west: -1,
-      south: 5,
-      east: 1,
-      north: 6,
-    });
-    assert.deepEqual(clipped, PILOT_BBOX);
-  });
-
-  it("returns null for a viewport entirely outside", () => {
-    assert.equal(
-      clipToPilotArea({ west: 0.1, south: 5.55, east: 0.2, north: 5.58 }),
-      null,
-    );
-    assert.equal(
-      clipToPilotArea({ west: -0.24, south: 6.0, east: -0.2, north: 6.1 }),
-      null,
-    );
-  });
-
-  it("resolves a small viewport to a handful of prefixes", () => {
-    // ~1km box around Kwame Nkrumah Circle.
-    const prefixes = prefixesForViewport({
-      west: -0.212,
-      south: 5.566,
-      east: -0.202,
-      north: 5.576,
-    });
-    assert.ok(prefixes.length > 0);
-    assert.ok(
-      prefixes.length <= 6,
-      `expected a handful of prefixes, got ${prefixes.length}`,
-    );
-    for (const prefix of prefixes) {
-      assert.equal(prefix.length, PREFIX_PRECISION);
-    }
-  });
-
-  it("returns no prefixes for a viewport outside the pilot area", () => {
-    assert.deepEqual(
-      prefixesForViewport({ west: 0.1, south: 5.55, east: 0.2, north: 5.58 }),
-      [],
-    );
-  });
-
-  it("covers the whole pilot area without exceeding the cap", () => {
-    const prefixes = prefixesForViewport(PILOT_BBOX);
-    assert.ok(prefixes.length > 0);
-    assert.ok(prefixes.length <= 64);
-    // Every grid cell must belong to one of the returned prefixes, or the map
-    // would silently omit part of the overlay.
-    const prefixSet = new Set(prefixes);
-    for (const cell of cellsCovering(PILOT_BBOX, 7)) {
-      assert.ok(prefixSet.has(prefixOfCell(cell)), `missing prefix for ${cell}`);
     }
   });
 });

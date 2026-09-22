@@ -7,18 +7,50 @@ changing the pilot area or the cell resolution is a one-file edit.
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Pilot area: Circle / Kaneshie / Avenor, Accra.
+# Covered areas.
 # ---------------------------------------------------------------------------
-# (west, south, east, north) in WGS84 degrees.
-PILOT_BBOX = (-0.245, 5.550, -0.195, 5.590)
+# Coverage is a LIST of named areas, not one rectangle. Mirrors
+# COVERED_AREAS in backend/src/lib/pilot.ts -- if one side changes, the other
+# must change with it.
+#
+# The pilot was Circle / Kaneshie / Avenor, (-0.245, 5.550, -0.195, 5.590).
+# That box sat in the middle of the Odaw catchment, which meant the model
+# could see where water arrived and not where it came from. Coverage now runs
+# the catchment: Korle Lagoon outfall in the south, up through Agbogbloshie,
+# Circle, Avenor, Alajo and Nima, to the Achimota headwaters in the north.
+#
+# Contiguous on purpose. HAND is measured against the nearest drainage, so
+# cutting a catchment into separate boxes computes a wrong height above
+# drainage for every cell near a cut -- the same failure BUFFER_DEGREES
+# exists to prevent. Disjoint areas are supported (a future Dansoman or Weija
+# block would be one), but a single catchment should stay whole.
+#
+# Each entry is (id, name, (west, south, east, north)) in WGS84 degrees.
+COVERED_AREAS = [
+    (
+        "odaw",
+        "Odaw basin: Korle Lagoon to Achimota",
+        (-0.250, 5.535, -0.170, 5.650),
+    ),
+]
+
+# Back-compatible alias: the envelope of every covered area. Use it only for
+# framing and reporting. It is NOT a boundary test -- with disjoint areas it
+# spans the gaps between them.
+PILOT_BBOX = (
+    min(area[2][0] for area in COVERED_AREAS),
+    min(area[2][1] for area in COVERED_AREAS),
+    max(area[2][2] for area in COVERED_AREAS),
+    max(area[2][3] for area in COVERED_AREAS),
+)
 
 # Drainage just outside the pilot area still drains it, and a DEM window cut
 # exactly to the boundary would compute a wrong HAND for every edge cell.
 BUFFER_DEGREES = 0.015
 
-# Geohash precision. 7 gives ~152m x 152m cells and roughly 1,100 cells over
-# the pilot bbox. Precision 6 would give ~1.2km x 0.61km and only ~35 cells,
-# which is too coarse to read as a street-level map overlay.
+# Geohash precision. 7 gives ~152m x 152m cells: roughly 1,140 over the old
+# pilot bbox and roughly 5,100 over the Odaw catchment. Precision 6 would give
+# ~1.2km x 0.61km, which is too coarse to read as a street-level map overlay.
 #
 # This value is baked into every DynamoDB partition key. Changing it after
 # reports exist means migrating the Reports table.

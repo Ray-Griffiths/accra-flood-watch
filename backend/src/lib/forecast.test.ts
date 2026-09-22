@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { accumulate, nearestForecast, samplePoints, type ForecastPoint } from "./forecast.ts";
-import { PILOT_BBOX } from "./pilot.ts";
+import { COVERED_AREAS } from "./pilot.ts";
 
 /** A day of hourly stamps in the shape Open-Meteo actually returns them. */
 function hours(count: number, startHour = 0): string[] {
@@ -14,21 +14,56 @@ function hours(count: number, startHour = 0): string[] {
 }
 
 describe("sample points", () => {
-  it("places four points inside the pilot area", () => {
+  it("places every point inside a covered area", () => {
     const points = samplePoints();
-    assert.equal(points.length, 4);
+    assert.ok(points.length > 0);
     for (const point of points) {
-      assert.ok(point.longitude > PILOT_BBOX.west && point.longitude < PILOT_BBOX.east);
-      assert.ok(point.latitude > PILOT_BBOX.south && point.latitude < PILOT_BBOX.north);
+      const inside = COVERED_AREAS.some(
+        (area) =>
+          point.longitude > area.bounds.west &&
+          point.longitude < area.bounds.east &&
+          point.latitude > area.bounds.south &&
+          point.latitude < area.bounds.north,
+      );
+      assert.ok(inside, `${point.latitude},${point.longitude} is outside coverage`);
     }
   });
 
   it("spreads them apart rather than clustering", () => {
     const points = samplePoints();
-    const lons = new Set(points.map((p) => p.longitude));
-    const lats = new Set(points.map((p) => p.latitude));
-    assert.equal(lons.size, 2);
-    assert.equal(lats.size, 2);
+    assert.ok(new Set(points.map((p) => p.longitude)).size >= 2);
+    assert.ok(new Set(points.map((p) => p.latitude)).size >= 2);
+  });
+
+  it("samples densely enough to tell one neighbourhood from the next", () => {
+    // Accra rain is convective and falls in cells a few kilometres across.
+    // Four points described the old 5.5km pilot; spread over a whole
+    // catchment they would report one neighbourhood storm as another
+    // neighbourhood dry afternoon.
+    const points = samplePoints();
+    for (const area of COVERED_AREAS) {
+      const inArea = points.filter(
+        (p) =>
+          p.longitude >= area.bounds.west &&
+          p.longitude <= area.bounds.east &&
+          p.latitude >= area.bounds.south &&
+          p.latitude <= area.bounds.north,
+      );
+      const widthKm = (area.bounds.east - area.bounds.west) * 110.9;
+      const heightKm = (area.bounds.north - area.bounds.south) * 110.6;
+      const areaKm2 = widthKm * heightKm;
+      // One sample per ~25 square kilometres or better.
+      assert.ok(
+        inArea.length >= areaKm2 / 25,
+        `${area.id}: ${inArea.length} points over ${areaKm2.toFixed(0)} km2`,
+      );
+    }
+  });
+
+  it("returns no duplicate points", () => {
+    const points = samplePoints();
+    const keys = points.map((p) => `${p.latitude},${p.longitude}`);
+    assert.equal(new Set(keys).size, keys.length);
   });
 });
 

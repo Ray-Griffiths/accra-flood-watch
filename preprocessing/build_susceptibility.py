@@ -50,7 +50,10 @@ def _susceptibility_from_slope(slope: float) -> float:
 
 def build(refresh: bool = False) -> dict:
     print("Accra Flood Watch - terrain preprocessing")
-    print(f"  pilot bbox      : {config.PILOT_BBOX}")
+    for area_id, name, bbox in config.COVERED_AREAS:
+        print(f"  area            : {area_id} ({name})")
+        print(f"                    {bbox}")
+    print(f"  envelope        : {config.PILOT_BBOX}")
     print(f"  geohash precision: {config.GEOHASH_PRECISION}")
     print()
 
@@ -81,7 +84,18 @@ def build(refresh: bool = False) -> dict:
     longitudes, latitudes = transform * (column_indices + 0.5, row_indices + 0.5)
 
     print("Aggregating into geohash cells...")
-    cells = geohashing.cells_covering(config.PILOT_BBOX, config.GEOHASH_PRECISION)
+    # One pass per area, deduplicated. Covering the envelope instead would
+    # manufacture cells in the gaps between disjoint areas -- ground with a
+    # DEM reading but no reason to claim it is being watched.
+    seen_cells: set[str] = set()
+    cells: list[str] = []
+    for _, _, bbox in config.COVERED_AREAS:
+        for cell in geohashing.cells_covering(bbox, config.GEOHASH_PRECISION):
+            if cell in seen_cells:
+                continue
+            seen_cells.add(cell)
+            cells.append(cell)
+    cells.sort()
     print(f"  grid cells      : {len(cells)}")
 
     # Bucket pixels by cell in one pass rather than masking per cell, which
@@ -159,12 +173,21 @@ def build(refresh: bool = False) -> dict:
     print()
 
     print("Applying historical flood points...")
-    points = flood_points.points_in_bbox(config.PILOT_BBOX)
+    points = flood_points.points_in_areas(config.COVERED_AREAS)
     outside = len(flood_points.HISTORICAL_FLOOD_POINTS) - len(points)
-    print(f"  points in area  : {len(points)} ({outside} outside pilot bbox)")
+    print(f"  points in area  : {len(points)} ({outside} outside coverage)")
+
+    # Only corroborated points override the terrain model. This used to apply
+    # every point and print a warning about the unverified ones, which meant a
+    # coordinate somebody had guessed raised a cell to 75 exactly as hard as
+    # one that had been checked -- and five of the original eight turned out to
+    # be in the wrong cell entirely. A warning nobody acts on is not a control.
+    applicable = flood_points.verified(points)
+    skipped = flood_points.unverified(points)
+    print(f"  verified        : {len(applicable)}")
 
     applied = 0
-    for point in points:
+    for point in applicable:
         cell = geohashing.encode(
             point["latitude"], point["longitude"], config.GEOHASH_PRECISION
         )
@@ -189,20 +212,25 @@ def build(refresh: bool = False) -> dict:
 
     print(f"  points applied  : {applied}")
 
-    unverified = flood_points.unverified(points)
-    if unverified:
+    if skipped:
         print()
-        print(f"  WARNING: {len(unverified)} of {len(points)} historical points are")
-        print("  UNVERIFIED. Their coordinates are approximate and each raises its")
-        print("  cell to at least 75, overriding the terrain model. Verify against")
-        print("  NADMO reports before the pilot goes live. See flood_points.py.")
-        for point in unverified:
+        print(f"  {len(skipped)} of {len(points)} points are NOT APPLIED, pending")
+        print("  verification. They are real places with documented flooding whose")
+        print("  coordinates could not be corroborated by two independent sources.")
+        print("  Each needs a local check. See flood_points.py for what is missing.")
+        for point in skipped:
             print(f"    - {point['name']}")
     print()
 
     scores = np.array([record["susceptibility"] for record in records.values()])
     artefact = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "coveredAreas": [
+            {"id": area_id, "name": name, "bbox": list(bbox)}
+            for area_id, name, bbox in config.COVERED_AREAS
+        ],
+        # Retained under its original name so seed_risk_cells.py and any saved
+        # artefact stay readable. It is the envelope, not a boundary.
         "pilotBbox": list(config.PILOT_BBOX),
         "geohashPrecision": config.GEOHASH_PRECISION,
         "model": {
@@ -213,7 +241,7 @@ def build(refresh: bool = False) -> dict:
             "handPercentile": config.HAND_PERCENTILE,
         },
         "historicalPointsApplied": applied,
-        "historicalPointsUnverified": len(unverified),
+        "historicalPointsUnverified": len(skipped),
         "cellCount": len(records),
         "cells": list(records.values()),
     }

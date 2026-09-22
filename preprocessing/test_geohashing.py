@@ -4,8 +4,16 @@ The grid this produces is baked into every DynamoDB partition key, so a silent
 error here would be expensive to discover later.
 """
 
+import config
 import geohashing as g
-from config import GEOHASH_PRECISION, PILOT_BBOX
+from config import GEOHASH_PRECISION
+
+# The original Circle / Kaneshie / Avenor pilot box, pinned here as a fixture
+# rather than read from config. The cell count below was measured for exactly
+# this box and is what holds the Python encoder and the TypeScript one to the
+# same grid. Pointing it at whatever coverage happens to be would turn a real
+# cross-implementation check into a number that gets edited whenever it fails.
+PILOT_BBOX = (-0.245, 5.550, -0.195, 5.590)
 
 
 def test_encodes_the_canonical_reference_value():
@@ -99,6 +107,47 @@ def test_points_outside_the_pilot_area_fall_outside_the_grid():
         assert g.encode(latitude, longitude, GEOHASH_PRECISION) not in cells
 
 
+def _covered_cells() -> set[str]:
+    """Every grid cell in every covered area, as the build script builds it."""
+    cells: set[str] = set()
+    for _, _, bbox in config.COVERED_AREAS:
+        cells |= set(g.cells_covering(bbox, GEOHASH_PRECISION))
+    return cells
+
+
+def test_coverage_now_includes_the_upstream_odaw_ground():
+    # The point of extending to the catchment. Achimota and Lapaz are where
+    # the water that floods Circle comes from, and the pilot box stopped short
+    # of both -- they are asserted as outside the pilot fixture just above.
+    cells = _covered_cells()
+    for latitude, longitude in [
+        (5.6037, -0.1870),  # Achimota
+        (5.6500, -0.2200),  # Lapaz
+        (5.5820, -0.2115),  # Alajo bridge approach
+        (5.5450, -0.2220),  # Agbogbloshie / Korle Lagoon
+    ]:
+        assert g.encode(latitude, longitude, GEOHASH_PRECISION) in cells
+
+
+def test_coverage_still_excludes_other_parts_of_accra():
+    cells = _covered_cells()
+    for latitude, longitude in [
+        (5.5500, -0.3100),  # Weija, west
+        (5.6300, 0.0100),  # Tema, east
+        (5.7000, -0.2100),  # north of the headwaters
+        (6.6885, -1.6244),  # Kumasi
+    ]:
+        assert g.encode(latitude, longitude, GEOHASH_PRECISION) not in cells
+
+
+def test_covered_grid_matches_the_expected_cell_count():
+    # ~5,100 cells over the Odaw catchment at precision 7. A large move here
+    # means the area changed or the walk is wrong, and either way the hourly
+    # scoring cost moved with it.
+    cells = _covered_cells()
+    assert 4500 < len(cells) < 5700
+
+
 def test_neighbours_returns_eight_distinct_surrounding_cells():
     cell = g.encode(5.5709, -0.2074, 7)
     result = g.neighbours(cell)
@@ -113,3 +162,49 @@ def test_neighbour_relation_is_symmetric():
     cell = g.encode(5.5709, -0.2074, 7)
     for neighbour in g.neighbours(cell):
         assert cell in g.neighbours(neighbour)
+
+
+def test_covered_areas_mirror_the_backend_definition():
+    """config.COVERED_AREAS and backend/src/lib/pilot.ts must not drift.
+
+    Both files say so in a comment, which has never once stopped two constants
+    from diverging. The grid is baked into every DynamoDB partition key: if the
+    preprocessing seeds cells the handlers consider out of bounds, reports get
+    rejected over ground the map is drawing.
+    """
+    import pathlib
+    import re
+
+    source = (
+        pathlib.Path(__file__).resolve().parent.parent
+        / "backend"
+        / "src"
+        / "lib"
+        / "pilot.ts"
+    ).read_text(encoding="utf-8")
+
+    block = re.search(
+        r"COVERED_AREAS:\s*readonly\s+CoveredArea\[\]\s*=\s*\[(.*?)\n\];",
+        source,
+        re.DOTALL,
+    )
+    assert block, "COVERED_AREAS not found in backend/src/lib/pilot.ts"
+
+    entries = re.findall(
+        r'id:\s*"([^"]+)".*?'
+        r'name:\s*"([^"]+)".*?'
+        r"bounds:\s*\{\s*west:\s*(-?[\d.]+),\s*south:\s*(-?[\d.]+),"
+        r"\s*east:\s*(-?[\d.]+),\s*north:\s*(-?[\d.]+)",
+        block.group(1),
+        re.DOTALL,
+    )
+    assert entries, "no areas parsed from backend/src/lib/pilot.ts"
+
+    backend = [
+        (area_id, name, (float(w), float(s), float(e), float(n)))
+        for area_id, name, w, s, e, n in entries
+    ]
+    assert backend == [
+        (area_id, name, tuple(float(v) for v in bbox))
+        for area_id, name, bbox in config.COVERED_AREAS
+    ]

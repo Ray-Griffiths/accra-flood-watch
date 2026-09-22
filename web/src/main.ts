@@ -19,9 +19,17 @@ import {
   type RiskResponse,
 } from "./api.ts";
 import { describeAge, loadRisk, storeRisk } from "./cache.ts";
+import { envelopeOf, type Coverage } from "./pilot.ts";
+import {
+  RISK_MIN_ZOOM,
+  clampBbox,
+  isUsableBbox,
+  viewportBboxFor,
+  type Bbox,
+} from "./viewport.ts";
 import { DetailSheet, type CellDetail } from "./detail.ts";
 import { stylesForView, type MapView } from "./levels.ts";
-import { createMap, installOverlays, RISK_LAYERS, type MapHandles } from "./map.ts";
+import { DEFAULT_ZOOM, RISK_LAYERS, createMap, installOverlays, type MapHandles } from "./map.ts";
 import { ReportFlow } from "./reporting.ts";
 import { RouteFlow, type RouteState } from "./route-flow.ts";
 import { decideView, hasConfirmedCell } from "./view.ts";
@@ -33,7 +41,6 @@ import {
   watchedCells,
 } from "./watch.ts";
 
-type Bbox = [number, number, number, number];
 
 const elements = {
   map: document.querySelector<HTMLElement>("#map")!,
@@ -159,8 +166,16 @@ function describeRisk(risk: RiskResponse, cached?: { ageLabel: string }): void {
     return;
   }
 
-  if (risk.outsidePilotArea) {
-    setStatus(risk.message ?? "Outside the pilot area.", "warn");
+  if (risk.outsideCoverage ?? risk.outsidePilotArea) {
+    setStatus(risk.message ?? "Outside the area this map covers.", "warn");
+    return;
+  }
+
+  // A truncated response is part of the viewport drawn as though it were all
+  // of it. Saying so matters more than it looks: the missing part renders
+  // exactly like ground at low risk.
+  if (risk.truncated) {
+    setStatus("Showing part of this view only — zoom in to see every street.", "warn");
     return;
   }
 
@@ -176,8 +191,40 @@ function describeRisk(risk: RiskResponse, cached?: { ageLabel: string }): void {
   setStatus("Terrain only — no rainfall forecast yet.", "warn");
 }
 
+/**
+ * The box the map is about to show, worked out before the map exists.
+ *
+ * Clamped to the coverage envelope so the opening request does not ask for
+ * ground off the edge of the grid. The server clips too; this only keeps the
+ * request small.
+ */
+function openingViewport(centre: [number, number], envelope: Bbox): Bbox {
+  const rect = elements.map.getBoundingClientRect();
+  // The container is sized by CSS flex, so it normally has real dimensions
+  // before MapLibre touches it. Falling back to the window keeps the opening
+  // request the right order of size if it does not.
+  const width = rect.width > 0 ? rect.width : window.innerWidth;
+  const height = rect.height > 0 ? rect.height : window.innerHeight;
+
+  return clampBbox(viewportBboxFor(centre, DEFAULT_ZOOM, width, height), envelope);
+}
+
 async function refreshForViewport(): Promise<void> {
   if (!handles) return;
+
+  // Below the overlay zoom a 152m cell is a few pixels, and the viewport needs
+  // more partitions than one request returns. Rather than draw a fraction of
+  // the picture at a size nobody can read, say what is happening and clear it.
+  // An overlay that is silently incomplete is worse than no overlay: blank
+  // ground and safe ground look the same.
+  if (handles.zoom() < RISK_MIN_ZOOM) {
+    currentCells = [];
+    handles.setRisk([]);
+    handles.setReports([]);
+    setStatus("Zoom in to see street-level flood risk.", "warn");
+    return;
+  }
+
   const bbox = handles.viewportBbox();
 
   const [risk, reports] = await Promise.allSettled([fetchRisk(bbox), fetchReports(bbox)]);
@@ -348,15 +395,46 @@ async function start(): Promise<void> {
     return;
   }
 
-  const pilotBbox = config.pilotArea.bbox;
-  const riskPromise = fetchRisk(pilotBbox).catch((error: unknown) => error as Error);
+  // Prefer the area list. `pilotArea` is the fallback for the window between
+  // a stack deploy and the web sync, when this bundle may be talking to a
+  // deployment that predates it.
+  const coverage: Coverage = config.coverage
+    ? {
+        areas: config.coverage.areas,
+        description: config.coverage.description,
+        envelope: config.coverage.envelope,
+      }
+    : {
+        areas: [
+          {
+            id: "pilot",
+            name: config.pilotArea.name,
+            bbox: config.pilotArea.bbox,
+          },
+        ],
+        description: config.pilotArea.name,
+        envelope: config.pilotArea.bbox,
+      };
+
+  const envelope = (envelopeOf(coverage.areas) ?? coverage.envelope) as Bbox;
+  const centre = config.coverage?.centre ?? config.pilotArea.centre;
+
+  // The opening request goes out before the map exists, so that the overlay is
+  // in flight while the style and tiles load. It used to ask for the whole
+  // covered area, which over a catchment is thousands of cells and megabytes
+  // of it off-screen. The viewport is computed instead, from the same centre,
+  // zoom and container size the map is about to use.
+  const openingBbox = openingViewport(centre, envelope);
+  const riskPromise = isUsableBbox(openingBbox)
+    ? fetchRisk(openingBbox).catch((error: unknown) => error as Error)
+    : Promise.resolve(new Error("No usable opening viewport."));
 
   const map = createMap(
     elements.map,
     config.map.styleUrl,
     config.map.key,
-    pilotBbox,
-    config.pilotArea.centre,
+    envelope,
+    centre,
   );
 
   // Push may not be provisioned on this stack, and the browser may not do it
@@ -378,7 +456,7 @@ async function start(): Promise<void> {
       // than waiting for the next pan.
       void refreshForViewport();
     },
-    pilotBbox,
+    coverage,
   );
 
   elements.reportButton.addEventListener("click", () => reportFlow.open());
@@ -402,7 +480,7 @@ async function start(): Promise<void> {
       handles?.frameRoute(drawn);
     },
     onState: renderRouteState,
-  }, pilotBbox);
+  }, coverage);
 
   elements.routeButton.addEventListener("click", () => {
     if (routeFlow.currentState === "picking") routeFlow.cancel();
@@ -433,13 +511,13 @@ async function start(): Promise<void> {
 
       currentCells = result.cells;
       handles?.setRisk(currentCells);
-      storeRisk(pilotBbox, result);
+      storeRisk(openingBbox, result);
       lastRisk = result;
       describeRisk(result);
       applyViewDecision();
     });
 
-    void fetchReports(pilotBbox)
+    void fetchReports(openingBbox)
       .then((response) => {
         currentReports = response.reports;
         handles?.setReports(currentReports);

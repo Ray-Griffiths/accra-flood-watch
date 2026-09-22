@@ -6,7 +6,7 @@ import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
 import { documents, requireTable } from "../lib/dynamo.ts";
 import { json, problem } from "../lib/http.ts";
-import { cellFor, isInsidePilotArea, prefixFor } from "../lib/pilot.ts";
+import { cellFor, describeCoverage, isInsideCoverage, prefixFor } from "../lib/pilot.ts";
 import {
   CONFIRMATION_REPORT_COUNT,
   CONFIRMATION_WINDOW_MINUTES,
@@ -61,12 +61,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return problem(400, "longitude must be a number");
   }
 
-  // Reports outside the pilot boundary are rejected at the handler. Accepting
+  // Reports outside coverage are rejected at the handler. Accepting
   // them would put points on a map the terrain grid knows nothing about.
-  if (!isInsidePilotArea(latitude, longitude)) {
+  if (!isInsideCoverage(latitude, longitude)) {
     return problem(
       422,
-      "That location is outside the Accra Flood Watch pilot area (Circle, Kaneshie and Avenor).",
+      `That location is outside the area Accra Flood Watch covers (${describeCoverage()}).`,
     );
   }
 

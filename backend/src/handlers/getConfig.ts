@@ -3,7 +3,12 @@ import { DescribeKeyCommand, LocationClient } from "@aws-sdk/client-location";
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 
 import { json } from "../lib/http.ts";
-import { PILOT_BBOX, CELL_PRECISION } from "../lib/pilot.ts";
+import {
+  CELL_PRECISION,
+  COVERAGE_ENVELOPE,
+  COVERED_AREAS,
+  describeCoverage,
+} from "../lib/pilot.ts";
 
 const location = new LocationClient({});
 const ssm = new SSMClient({});
@@ -80,12 +85,47 @@ export const handler: APIGatewayProxyHandlerV2 = async () => {
       // whether to offer a control at all, rather than offering one that
       // fails after the user has already granted a permission.
       pushPublicKey: vapidPublicKey,
-      pilotArea: {
-        name: "Circle, Kaneshie and Avenor",
-        bbox: [PILOT_BBOX.west, PILOT_BBOX.south, PILOT_BBOX.east, PILOT_BBOX.north],
+      // The areas the terrain grid actually covers, each named so the client
+      // can say where a point fell outside rather than only that it did.
+      //
+      // The envelope is for framing the map and nothing else: with disjoint
+      // areas it spans the gaps between them, so treating it as the boundary
+      // would accept coordinates over ground with no grid behind it. Boundary
+      // decisions use `areas`.
+      coverage: {
+        description: describeCoverage(),
+        areas: COVERED_AREAS.map((area) => ({
+          id: area.id,
+          name: area.name,
+          bbox: [area.bounds.west, area.bounds.south, area.bounds.east, area.bounds.north],
+        })),
+        envelope: [
+          COVERAGE_ENVELOPE.west,
+          COVERAGE_ENVELOPE.south,
+          COVERAGE_ENVELOPE.east,
+          COVERAGE_ENVELOPE.north,
+        ],
         centre: [
-          (PILOT_BBOX.west + PILOT_BBOX.east) / 2,
-          (PILOT_BBOX.south + PILOT_BBOX.north) / 2,
+          (COVERAGE_ENVELOPE.west + COVERAGE_ENVELOPE.east) / 2,
+          (COVERAGE_ENVELOPE.south + COVERAGE_ENVELOPE.north) / 2,
+        ],
+      },
+      // Retained deliberately. The web bundle and this stack deploy
+      // separately, so between `sam deploy` and the S3 sync there is a window
+      // where a browser holding the previous bundle talks to this handler. It
+      // reads `pilotArea` and nothing else; dropping the field would blank the
+      // map for the length of that window.
+      pilotArea: {
+        name: describeCoverage(),
+        bbox: [
+          COVERAGE_ENVELOPE.west,
+          COVERAGE_ENVELOPE.south,
+          COVERAGE_ENVELOPE.east,
+          COVERAGE_ENVELOPE.north,
+        ],
+        centre: [
+          (COVERAGE_ENVELOPE.west + COVERAGE_ENVELOPE.east) / 2,
+          (COVERAGE_ENVELOPE.south + COVERAGE_ENVELOPE.north) / 2,
         ],
       },
       cellPrecision: CELL_PRECISION,

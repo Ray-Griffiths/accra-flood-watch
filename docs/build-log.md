@@ -967,3 +967,217 @@ functional effect and no action.
 - 19 frontend tests (up from 13), 173 backend, 0 failures.
 - New: `web/src/pilot.ts`, `web/src/pilot.test.ts`.
 - Reports: 0 items. Watchers: 0 items. Grid: 0 confirmed.
+
+---
+
+## Extending coverage to the Odaw catchment
+
+Asked to review how feasible four out-of-scope items were, the answer to three
+was "don't". The fourth — coverage beyond the pilot — was worth doing at a
+smaller size than the question implied, so it got built.
+
+### Why the catchment and not "more of Accra"
+
+Whole-of-Greater-Accra costs about 150,000 cells and ~$140/month in DynamoDB
+writes alone, roughly seven times the target for everything. It also breaks
+`scoreRisk`, which loads every cell through one `Promise.all` and batch-writes
+them in a 120s Lambda.
+
+The Odaw basin is 5,100 cells and ~$5/month, and needs no redesign anywhere.
+More to the point it is the right *shape*: Accra flooding is one system
+draining to the Korle Lagoon, and the pilot box sat in the middle of it, able
+to see where water arrived but not where it came from. Achimota and Lapaz —
+asserted as outside the grid in the old tests — are the headwaters.
+
+Measured before writing anything, which is what made the size decision
+obvious:
+
+| Option | Cells | Prefixes | DDB writes/mo |
+|---|---|---|---|
+| Pilot only (before) | 1,140 | 48 | $1.16 |
+| **Odaw catchment** | **5,100** | **176** | **$5.19** |
+| Greater Accra | ~150,000 | ~4,750 | ~$140 |
+
+Contiguous rather than scattered pockets, for a physical reason: HAND is
+measured against the nearest drainage, so cutting a catchment into boxes
+computes a wrong height-above-drainage for every cell near a cut. That is the
+failure `BUFFER_DEGREES` already exists to prevent. The three additions worth
+having most (Alajo, Nima, Agbogbloshie) turned out to be adjacent to or
+overlapping the pilot anyway — "disjoint pockets" was a fiction for the Odaw
+corridor.
+
+### Coverage is a list, not a box
+
+Widening `PILOT_BBOX` would have worked exactly once. The next areas worth
+adding — Dansoman, Weija, Madina — are not adjacent to anything, and a box
+drawn around all of them claims thousands of cells over ground the terrain
+model has never seen.
+
+So `COVERED_AREAS` is a list of named areas, `COVERAGE_ENVELOPE` frames the
+map and is never a boundary test, and the gap between two areas is outside
+coverage rather than inside the envelope. Production ships one area today,
+which would have left every disjoint and overlapping path untested — so the
+helpers take the area list as an argument defaulting to the constant, and the
+tests pass deliberately gappy and overlapping fixtures.
+
+### Three things the larger area broke
+
+**Routing silently stopped verifying whole trips.** `loadCorridor` capped its
+prefixes at `MAX_PREFIXES_PER_REQUEST`. Over the pilot that never bound; over
+the catchment a Korle-Lagoon-to-Achimota corridor needs 176 and would have
+been truncated to 128, then presented with the same confidence as a fully
+checked route. A viewport that returns some of its cells is a map missing a
+corner; a corridor that returns some of its hazards is a lie. `prefixesForCorridor`
+is uncapped and returns null past a sanity bound, and the handler refuses the
+route rather than checking part of it.
+
+**The opening request grew to two megabytes.** The first risk fetch goes out
+before the map exists, on purpose, so the overlay is in flight while tiles
+load — which meant it could not ask what was on screen and asked for the whole
+area instead. `web/src/viewport.ts` computes the viewport from the centre,
+zoom and container size, all known beforehand, so the request still leaves
+first and is now a fraction of the size. Steady-state viewport fetching
+already existed on `moveend`; only the opening call was whole-area.
+
+**A zoomed-out map would have drawn a partial overlay as a complete one.** The
+whole catchment at once exceeds the per-request cap. Truncating spatially
+means some streets render and others do not, and blank ground looks exactly
+like safe ground. Below `RISK_MIN_ZOOM` (13, where a phone viewport needs ~56
+partitions — close to what the pilot needed) the overlay is cleared and the
+map says *"Zoom in to see street-level flood risk."* When the cap does bite,
+the response carries `truncated` and the client says so.
+
+### Kept deployable
+
+`getConfig` serves the new `coverage` object *and* the old `pilotArea`. The
+stack and the web bundle deploy separately, so there is a window where a
+browser holding the previous bundle talks to the new backend; it reads
+`pilotArea` and nothing else. Same for `outsidePilotArea` alongside
+`outsideCoverage`. Both can go once the new bundle has been live a while.
+
+No table migration: cells and prefixes derive from coordinates at unchanged
+precision, so existing pilot cells and reports stay valid. New ground needs a
+re-run of `build_susceptibility.py` and `seed_risk_cells.py`.
+
+### Guarding the mirror
+
+`config.py` and `pilot.ts` both carry a comment saying they must agree, which
+has never once stopped two constants diverging. `test_covered_areas_mirror_the_backend_definition`
+parses `COVERED_AREAS` out of the TypeScript and compares it to the Python.
+Checked that it bites rather than silently parsing nothing.
+
+The encoder cross-check tests had been using `PILOT_BBOX` as a fixture,
+including the 1,140-cell count measured against the preprocessing output. That
+number pins the Python and TypeScript encoders to the same grid, so it is now
+a pinned literal in both test files rather than whatever coverage happens to
+be — otherwise a real cross-implementation check becomes a number edited
+whenever it fails.
+
+### Still unresolved
+
+The eight historical flood points are still `verified: False`, and each raises
+its cell to at least 75, overriding the terrain model. Extending coverage
+multiplies that unverified surface rather than reducing it. Verifying them
+against NADMO reports is now more overdue than it was.
+
+### Counts
+
+- 193 backend tests (up from 173), 45 frontend (up from 19), 17 preprocessing
+  (up from 13). 0 failures. `sam build` clean, `npm run build` clean.
+- New: `backend/src/lib/pilot.test.ts`, `web/src/viewport.ts`,
+  `web/src/viewport.test.ts`.
+- Grid: 5,100 cells, 176 partitions. Not yet deployed or re-seeded.
+
+---
+
+## Verifying the historical flood points
+
+The eight points had carried `verified: False` since they were written. Each
+raises its cell to at least 75 and its neighbours to 55, overriding the
+terrain model, so this was the largest known unquantified risk in the data.
+
+### Method
+
+Two criteria, both required. The place had to be documented as flooding by a
+source that is not this project, and the coordinate had to be corroborated by
+two independent gazetteers — OpenStreetMap via Nominatim, and Amazon Location
+GeoPlaces — agreeing with each other to within about one grid cell.
+
+Using GeoPlaces for this is the same IAM path `calculateSafeRoute` already
+uses, so it needed no new permissions.
+
+### What the check found
+
+Every place was real and documented as flooding. **Five of the eight
+coordinates were wrong enough to land in a different geohash cell** — they had
+been painting the floor of 75 onto the wrong streets.
+
+| Point | Error | Corrected to |
+|---|---|---|
+| Kwame Nkrumah Circle | **~870m ENE** | 5.5696, -0.2153 |
+| Alajo | **~1.4km S** | 5.5937, -0.2169 |
+| Kaneshie market frontage | ~270m SE | 5.5644, -0.2343 |
+| Obetsebi Lamptey Circle | ~250m E | 5.5612, -0.2293 |
+| Avenor | 134m (sub-cell) | 5.5777, -0.2186 |
+
+Circle is the one that matters. A single geocoder would not have caught it:
+Amazon Location returns *two* different POIs named "Kwame Nkrumah Circle",
+1.8km apart, and only one is corroborated by OSM's four highway segments of
+that name. A third, independent check settled it — the cached drainage puts
+the old coordinate 1,176m from the nearest mapped river and the corrected one
+302m, and Circle is a place defined by sitting beside the Odaw.
+
+Three could not be verified and are now carried as candidates rather than
+applied:
+
+- **Kaneshie First Light** — flooding is beyond doubt (the AMA is building an
+  underground drain there specifically to stop it) but neither gazetteer
+  carries "First Light" as a feature, so the pin cannot be placed.
+- **Odaw channel at Circle** — sits on a side drain 876m from the river, and
+  once Circle is corrected it double-counts the same ground 300m away.
+- **Lartebiokorshie drain** — no source for this specific drain, coordinate
+  ~1km from the OSM centroid with no agreement between sources.
+
+### The flag now does something
+
+`verified` used to print a warning and apply the point anyway. A guessed
+coordinate raised a cell to 75 exactly as hard as a checked one, which is the
+opposite of what the flag is for. Only verified points are applied now;
+unverified ones are listed and passed over. A warning nobody can act on is not
+a control.
+
+Each verified entry also records *what* verified it. "Verified" with no
+source is a claim, not a verification, and a test enforces that the two travel
+together.
+
+### A silent failure the coverage change had introduced
+
+`load_elevation` and `load_drainage` reused their caches whenever the file
+existed, with no record of which bounding box produced them. Safe while the
+area was a constant; now that coverage is configuration, widening it and
+re-running without `--refresh` would have read a DEM window that does not
+reach the new ground and computed HAND and slope for cells the raster never
+covered — silently, with a full-looking grid at the end.
+
+Both caches now stamp their window and re-fetch on a mismatch. The existing
+cache was built for `(-0.260, 5.535, -0.180, 5.605)` and the catchment needs
+`(-0.265, 5.520, -0.155, 5.665)`, so it correctly reports itself stale.
+
+### Caveats worth keeping
+
+- Obetsebi Lamptey and Kaneshie First Light have both had major drainage works
+  since the flooding was recorded. The historical floor may overstate current
+  risk at both. Recorded in the notes rather than silently adjusted.
+- Kaneshie market frontage is the weakest verified point: the two gazetteers
+  sit 270m apart, so it is good to about two cells. First to recheck on the
+  ground.
+- Coordinates are stored to four decimals (~11m). That is finer than the
+  sources justify; the honest precision is the cell.
+
+### Counts
+
+- 26 preprocessing tests (up from 17), 193 backend, 45 frontend. 0 failures.
+- New: `preprocessing/test_flood_points.py`.
+- 5 points applied, 3 carried as candidates. Previously 8 applied, 0 checked.
+- **Not re-run end to end**: `rasterio` is not installed in this shell, so
+  `build_susceptibility.py` has not been executed against the corrections.

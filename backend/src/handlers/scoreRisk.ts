@@ -4,10 +4,10 @@ import { BatchWriteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { dispatchAlerts } from "../lib/dispatch.ts";
 import { documents, requireTable } from "../lib/dynamo.ts";
 import { fetchForecasts, nearestForecast, type ForecastPoint } from "../lib/forecast.ts";
-import { bounds, cellsCovering, neighbours } from "../lib/geohash.ts";
+import { bounds, neighbours } from "../lib/geohash.ts";
 import { emitMetrics } from "../lib/metrics.ts";
 import { isNewlyDangerous, type RaisedCell } from "../lib/notify.ts";
-import { PILOT_BBOX, PREFIX_PRECISION, prefixOfCell } from "../lib/pilot.ts";
+import { coveragePrefixes, prefixOfCell } from "../lib/pilot.ts";
 import type { DepthLevel } from "../lib/risk.ts";
 import {
   DEFAULT_THRESHOLDS,
@@ -111,11 +111,6 @@ async function loadTuning(): Promise<TuningParameters> {
     console.error("Falling back to built-in tuning", error);
     return fallback;
   }
-}
-
-/** Every partition key in the pilot area. Bounded and known, so never a scan. */
-function pilotPrefixes(): string[] {
-  return cellsCovering(PILOT_BBOX, PREFIX_PRECISION);
 }
 
 async function loadAllCells(table: string, prefixes: string[]): Promise<RiskCellItem[]> {
@@ -233,7 +228,7 @@ export const handler = async (): Promise<{
 
   const riskTable = requireTable("RISK_CELLS_TABLE");
   const reportsTable = requireTable("REPORTS_TABLE");
-  const prefixes = pilotPrefixes();
+  const prefixes = coveragePrefixes();
 
   const [tuning, forecasts, cells, reportsByCell] = await Promise.all([
     loadTuning(),

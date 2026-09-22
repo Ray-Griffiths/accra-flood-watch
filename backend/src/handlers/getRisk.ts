@@ -4,7 +4,7 @@ import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { documents, requireTable } from "../lib/dynamo.ts";
 import { json, problem } from "../lib/http.ts";
 import { bounds } from "../lib/geohash.ts";
-import { parseBbox, prefixesForViewport } from "../lib/pilot.ts";
+import { describeCoverage, parseBbox, prefixesForViewport } from "../lib/pilot.ts";
 import {
   describeTerrain,
   explainTerrain,
@@ -46,14 +46,20 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return problem(400, "bbox must be west,south,east,north in degrees");
   }
 
-  const prefixes = prefixesForViewport(box);
+  const { prefixes, truncated } = prefixesForViewport(box);
   if (prefixes.length === 0) {
-    // Viewport lies entirely outside the pilot area. Not an error: the map
-    // says so, rather than showing an empty overlay with no explanation.
+    // Viewport lies entirely outside coverage. Not an error: the map says so,
+    // rather than showing an empty overlay with no explanation. An empty
+    // overlay and low risk everywhere look identical on screen, and only one
+    // of them is true here.
     return json(200, {
       cells: [],
+      outsideCoverage: true,
+      // Retained so a browser running the previous bundle against this
+      // deployment still understands the answer. Remove once the web build
+      // that reads `outsideCoverage` has been live for a while.
       outsidePilotArea: true,
-      message: "Outside the Accra Flood Watch pilot area.",
+      message: `Outside the area Accra Flood Watch covers (${describeCoverage()}).`,
     });
   }
 
@@ -160,6 +166,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       rainfall: anyRainfallKnown
         ? { next6hMm: round1(wettest6h), next24hMm: round1(wettest24h) }
         : null,
+      // The viewport needed more partitions than one request returns, so
+      // these cells are part of it rather than all of it. The client says so
+      // instead of drawing a map that is blank where it ran out.
+      truncated,
       generatedAt: new Date().toISOString(),
     },
     // Brief edge caching. Risk changes hourly at most, and a storm-time

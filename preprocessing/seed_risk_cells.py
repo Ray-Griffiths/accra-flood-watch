@@ -52,9 +52,12 @@ def seed(dry_run: bool = False) -> None:
 
     unverified = artefact.get("historicalPointsUnverified", 0)
     if unverified:
+        # Not a warning about the data being seeded -- these points were left
+        # out of the grid on purpose. Reported so the count is visible rather
+        # than silently absent.
         print(
-            f"  WARNING          : {unverified} historical points are unverified "
-            "(see flood_points.py)"
+            f"  not applied      : {unverified} candidate points await "
+            "verification (see flood_points.py)"
         )
 
     if dry_run:

@@ -14,7 +14,32 @@ export interface PilotArea {
   centre: [number, number];
 }
 
+export interface CoverageAreaResponse {
+  id: string;
+  name: string;
+  /** west, south, east, north */
+  bbox: [number, number, number, number];
+}
+
+/**
+ * The ground the terrain grid covers, as a list of named areas.
+ *
+ * `envelope` frames the map and is never a boundary test: with disjoint areas
+ * it spans the gaps between them.
+ */
+export interface CoverageResponse {
+  description: string;
+  areas: CoverageAreaResponse[];
+  envelope: [number, number, number, number];
+  centre: [number, number];
+}
+
 export interface ClientConfig {
+  /**
+   * Optional only because a browser holding this bundle may briefly talk to a
+   * deployment that predates it. `pilotArea` is the fallback for that window.
+   */
+  coverage?: CoverageResponse;
   pilotArea: PilotArea;
   cellPrecision: number;
   map: {
@@ -64,7 +89,15 @@ export interface RiskResponse {
   rainOutlook?: RainOutlook | null;
   rainfall?: { next6hMm: number; next24hMm: number } | null;
   generatedAt?: string;
+  outsideCoverage?: boolean;
+  /** Previous name for `outsideCoverage`, still sent during deploy skew. */
   outsidePilotArea?: boolean;
+  /**
+   * The viewport needed more partitions than one request returns, so these
+   * cells are part of it rather than all of it. Never draw a truncated
+   * response without saying so: a blank corner and low risk look identical.
+   */
+  truncated?: boolean;
   message?: string;
 }
 
@@ -82,6 +115,8 @@ export interface FloodReport {
 export interface ReportsResponse {
   reports: FloodReport[];
   reportCount: number;
+  truncated?: boolean;
+  outsideCoverage?: boolean;
   generatedAt: string;
 }
 

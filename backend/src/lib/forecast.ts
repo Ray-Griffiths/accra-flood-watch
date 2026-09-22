@@ -6,9 +6,11 @@
  * fresh deployment works. For a pilot calling it once an hour, free
  * non-commercial use is a comfortable fit.
  *
- * The pilot area is roughly 5.5km x 4.5km. Rainfall does vary across that, but
- * not enough to justify 1,140 separate lookups, so a handful of representative
- * points are fetched in a single request and each cell takes the nearest one.
+ * Rainfall varies across the covered area, but not per 152m cell, so a grid
+ * of representative points is fetched in a single request and each cell takes
+ * the nearest one. The grid is sized by area rather than fixed in count:
+ * four points described the original 5.5km x 4.5km pilot well enough, and
+ * would be close to meaningless spread over a whole river catchment.
  *
  * Every failure path here returns null rather than throwing or substituting
  * zero. A forecast that is absent must stay visibly absent all the way to the
@@ -16,7 +18,7 @@
  * people a flood is not coming.
  */
 
-import { PILOT_BBOX } from "./pilot.ts";
+import { COVERED_AREAS } from "./pilot.ts";
 import type { RainfallForecast } from "./scoring.ts";
 
 const ENDPOINT = "https://api.open-meteo.com/v1/forecast";
@@ -31,23 +33,44 @@ export interface ForecastPoint {
 }
 
 /**
- * Four points at the quarter positions of the pilot bounding box.
+ * Roughly 4km between sample points.
  *
- * Quarter positions rather than corners so that every cell has a sample point
- * reasonably close to it, instead of the middle of the area being equidistant
- * from four far-away readings.
+ * Accra rain is convective and falls in cells of a few kilometres, so this is
+ * about as coarse as a sample grid can be before it starts reporting one
+ * neighbourhood's storm as another's dry afternoon.
+ */
+const SAMPLE_SPACING_DEGREES = 0.036;
+
+/**
+ * A grid of forecast sample points across every covered area.
+ *
+ * Points sit at the centres of their grid squares rather than on the edges,
+ * so every point is inside the area it samples and two adjacent areas cannot
+ * both put a point on the boundary they share.
  */
 export function samplePoints(): Array<{ latitude: number; longitude: number }> {
-  const { west, south, east, north } = PILOT_BBOX;
-  const lons = [west + (east - west) * 0.25, west + (east - west) * 0.75];
-  const lats = [south + (north - south) * 0.25, south + (north - south) * 0.75];
-
   const points: Array<{ latitude: number; longitude: number }> = [];
-  for (const latitude of lats) {
-    for (const longitude of lons) {
-      points.push({ latitude, longitude });
+  const seen = new Set<string>();
+
+  for (const area of COVERED_AREAS) {
+    const { west, south, east, north } = area.bounds;
+    const columns = Math.max(2, Math.ceil((east - west) / SAMPLE_SPACING_DEGREES));
+    const rows = Math.max(2, Math.ceil((north - south) / SAMPLE_SPACING_DEGREES));
+
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const longitude = west + ((column + 0.5) / columns) * (east - west);
+        const latitude = south + ((row + 0.5) / rows) * (north - south);
+
+        // Overlapping areas would otherwise pay for the same lookup twice.
+        const key = `${latitude.toFixed(4)},${longitude.toFixed(4)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        points.push({ latitude, longitude });
+      }
     }
   }
+
   return points;
 }
 
