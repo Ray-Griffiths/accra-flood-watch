@@ -1,5 +1,6 @@
 ﻿import { randomUUID } from "node:crypto";
 
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
@@ -13,9 +14,12 @@ import {
   DEPTH_LABELS,
   type DepthLevel,
   isDepthLevel,
+  strongestDepth,
 } from "../lib/risk.ts";
 
 const REPORT_TTL_HOURS = 24;
+
+const lambda = new LambdaClient({});
 
 interface ExistingReport {
   reportId: string;
@@ -100,6 +104,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // does not wait for the next hourly run.
   const confirmation = await evaluateConfirmation(reportsTable, cellPrefix, cell, now);
 
+  // This report is what tipped the cell over. Anyone watching this place needs
+  // to know now, not at the top of the hour.
+  if (confirmation.level === "confirmed") {
+    await requestAlert(cell, cellPrefix, confirmation);
+  }
+
   return json(201, {
     accepted: true,
     cell,
@@ -122,12 +132,19 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
  * Reality outranks the model: if residents say there is water, the map says
  * there is water, whatever the forecast believes.
  */
+interface Confirmation {
+  level: "reported" | "confirmed";
+  recentReports: number;
+  /** Deepest water among the qualifying reports; absent when there are none. */
+  strongestDepth?: DepthLevel;
+}
+
 async function evaluateConfirmation(
   table: string,
   cellPrefix: string,
   cell: string,
   now: Date,
-): Promise<{ level: "reported" | "confirmed"; recentReports: number }> {
+): Promise<Confirmation> {
   const windowStart = new Date(
     now.getTime() - CONFIRMATION_WINDOW_MINUTES * 60_000,
   ).toISOString();
@@ -148,9 +165,55 @@ async function evaluateConfirmation(
       (CONFIRMING_DEPTHS as readonly string[]).includes(item.depth),
   );
 
+  const deepest = strongestDepth(qualifying.map((item) => item.depth));
+
   return {
     level:
       qualifying.length >= CONFIRMATION_REPORT_COUNT ? "confirmed" : "reported",
     recentReports: qualifying.length,
+    ...(deepest ? { strongestDepth: deepest } : {}),
   };
+}
+
+/**
+ * Hand the alert off to `notifyCell` and return regardless of what happens.
+ *
+ * Asynchronous invocation, for two reasons. The person who tapped the button
+ * is standing in rain waiting for a confirmation screen, and should not wait
+ * on a push service to get it. And a report that was successfully recorded
+ * must be reported as successfully recorded — failing their submission because
+ * a notification could not be sent would be the wrong answer to the wrong
+ * question.
+ *
+ * So every failure here is logged and swallowed. Lambda retries a failed async
+ * invocation twice on its own, and if the alert is lost after that, the hourly
+ * scoring run still finds the reports standing in the cell and confirms it.
+ * The slow path remains the backstop for the fast one.
+ */
+async function requestAlert(
+  cell: string,
+  cellPrefix: string,
+  confirmation: Confirmation,
+): Promise<void> {
+  const functionName = process.env["NOTIFY_FUNCTION_NAME"];
+  if (!functionName) return;
+
+  try {
+    await lambda.send(
+      new InvokeCommand({
+        FunctionName: functionName,
+        InvocationType: "Event",
+        Payload: Buffer.from(
+          JSON.stringify({
+            cell,
+            cellPrefix,
+            confirmingCount: confirmation.recentReports,
+            strongestDepth: confirmation.strongestDepth,
+          }),
+        ),
+      }),
+    );
+  } catch (error) {
+    console.error(`Could not request an alert for ${cell}`, error);
+  }
 }

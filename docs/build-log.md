@@ -791,3 +791,110 @@ never lands, that line should go too.
 - 160 backend tests, 13 frontend tests, 0 failures. No application code changed.
 - Reports: 0 items. Watchers: 0 items. RiskCells: 1,140 cells + 1 meta record.
 - Lambda concurrency still 10; the Support case is in, outcome pending.
+
+---
+
+## Day 6, continued — Alarms that reach someone, least privilege, instant alerts
+
+Three things, in increasing order of how much they change the product.
+
+### The alarms were talking to nobody
+
+Both alarms have existed since Day 4. Both evaluated correctly. Neither had an
+action, so a stalled scoring job would have changed an alarm state in a console
+nobody had open. The entire point of the stalled-scoring alarm is to be seen
+*without* anyone opening a console.
+
+An SNS topic, an email subscription, and `AlarmActions` plus `OKActions` on
+both. `OKActions` because "it started working again" is information too —
+without it, the only way to learn the outage ended is to go and look, which is
+the habit the alarm exists to remove.
+
+The address is a template **parameter with no default**. This repository is
+public, and a default would publish it. It is passed at deploy time and lives
+in the stack parameters instead. Left empty, the alarms evaluate and have
+nowhere to send, which is exactly the behaviour from before — so the template
+degrades to its old self rather than failing to deploy.
+
+### Least privilege, actually
+
+Five SAM managed policies replaced with explicit statements matching what the
+handlers really call. Verified by reading the call sites, not by trusting the
+previous session's notes:
+
+| Function | Was | Now |
+|---|---|---|
+| `health` | `DynamoDBReadPolicy` | `GetItem` |
+| `getRisk` | `DynamoDBReadPolicy` | `Query` |
+| `getReports` | `DynamoDBReadPolicy` | `Query` |
+| `calculateSafeRoute` | `DynamoDBReadPolicy` ×2 | `Query` on both tables |
+| `submitReport` | `DynamoDBCrudPolicy` + unused RiskCells read | `PutItem` + `Query` |
+| `scoreRisk` | `DynamoDBCrudPolicy` | `Query` + `BatchWriteItem` |
+
+Two of these are worth naming. `DynamoDBReadPolicy` grants `Scan` — and this
+project's whole table design exists to never need one, so holding it anywhere
+contradicted the schema. And `DynamoDBCrudPolicy` on `submitReport` granted
+`DeleteItem` and `BatchWriteItem` on the **public, unauthenticated write path**,
+against the one table whose contents cannot be regenerated. That is the
+difference between "a bug writes a bad report" and "a bug empties the reports
+table".
+
+`submitReport`'s RiskCells read grant was dead — that handler has never read
+that table. Removed rather than kept "in case".
+
+### Confirmed flooding now leaves the building immediately
+
+This was the real gap. `submitReport` recorded confirmed flooding and told
+nobody; the hourly run did the telling, so on a bad draw a watcher learned
+59 minutes after somebody stood in the water and said so. For the strongest
+signal the system has, that was the slowest path out of it.
+
+Dispatching from `submitReport` was rejected. That handler is the public
+unauthenticated write path, and giving it the Watchers table would let the most
+exposed function in the stack enumerate who is watching where. Instead a
+separate `notifyCell` function owns dispatch, and `submitReport` holds exactly
+one new permission: `lambda:InvokeFunction` on that one ARN. It can *cause* an
+alert; it still cannot see who receives one, or reach the keys used to sign it.
+
+Invoked asynchronously, so a person standing in rain gets their confirmation
+screen without waiting on a push service, and so a failure to notify can never
+fail a report that was successfully recorded.
+
+**The ordering inside `notifyCell` is the part worth keeping.** It claims the
+transition with a *conditional* update before sending anything, rather than
+reading the level and then writing it. Several people reporting one junction
+within seconds produce several concurrent invocations; read-then-write would
+have every one of them find "not yet confirmed" and every one of them alert.
+The conditional update means exactly one wins and the losers return silently.
+Alert-then-write would leave that race open, and the failure mode is one
+person's phone buzzing four times for one flood.
+
+### Verified against production
+
+Both paths, on the live stack.
+
+- **Suppression.** A report into a cell the hourly run had already confirmed:
+  `ConditionalCheckFailedException` → *"Cell ebzzdvz was already confirmed; no
+  alert sent"*, `InstantAlertSuppressed: 1`. No duplicate.
+- **Transition.** Two reports into a clean cell (`ebzzdzb`, baseline `low`,
+  score 8.5). Second report returned `confirmed`; 793 ms later `notifyCell` had
+  claimed the transition, and the public API was serving *"People here are
+  reporting water waist deep right now. 2 independent reports in the last three
+  hours. Avoid this area."* Previously: up to 59 minutes.
+- `strongestDepth` correctly chose `waist` over the earlier `knee`.
+- The 13:00 scoring run wrote all 1,140 cells under the tightened IAM, and
+  `/api/risk`, `/api/reports`, `/api/config` and `/api/route` all answer 200.
+- Changeset reviewed before executing: 5 adds, every modify non-replacing, no
+  CloudFront, S3 or DynamoDB resource touched.
+
+Test data cleaned in the same session this time, per the lesson recorded above:
+three reports deleted and `ebzzdzb` restored to the exact values the 13:00 run
+wrote, rather than left for the next hour to fix.
+
+### Counts
+
+- **173 backend tests** (up from 160), 13 frontend, 0 failures.
+- 7 Lambda functions (up from 6), 3 DynamoDB tables, 1 hourly schedule,
+  2 alarms now wired to an SNS topic.
+- New shared modules: `lib/vapid.ts`, `lib/metrics.ts` — extracted rather than
+  duplicated once a second caller needed them.

@@ -20,6 +20,20 @@ Parameters:
       https: URL.
     AllowedPattern: "^(mailto:|https://).+"
 
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Address that receives operational alarms — scoring stalled, forecast feed
+      down. Deliberately has no default: this repository is public, and baking
+      an address into it publishes it. Pass it at deploy time and it lives in
+      the stack parameters instead. Left empty, the alarms still evaluate and
+      simply have nowhere to send, which is the pre-existing behaviour.
+    AllowedPattern: "^$|^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
 Globals:
   Function:
     Runtime: nodejs22.x
@@ -399,10 +413,16 @@ Resources:
         Variables:
           RISK_CELLS_TABLE: !Ref RiskCellsTable
       Policies:
-        # One GetItem against the "#meta" partition. Read-only, like every
-        # other handler that is not the write path.
-        - DynamoDBReadPolicy:
-            TableName: !Ref RiskCellsTable
+        # One GetItem against the "#meta" partition, and nothing else.
+        #
+        # DynamoDBReadPolicy would also grant Query, Scan and BatchGetItem.
+        # Scan in particular is a capability this project has designed itself
+        # out of needing -- every access pattern resolves to a key -- so
+        # holding it anywhere contradicts the table design.
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:GetItem
+              Resource: !GetAtt RiskCellsTable.Arn
       Events:
         Health:
           Type: HttpApi
@@ -438,8 +458,11 @@ Resources:
         Variables:
           RISK_CELLS_TABLE: !Ref RiskCellsTable
       Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref RiskCellsTable
+        # Query by cellPrefix. Never Scan -- see the table comment.
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !GetAtt RiskCellsTable.Arn
       Events:
         GetRisk:
           Type: HttpApi
@@ -472,8 +495,10 @@ Resources:
         Variables:
           REPORTS_TABLE: !Ref ReportsTable
       Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref ReportsTable
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !GetAtt ReportsTable.Arn
       Events:
         GetReports:
           Type: HttpApi
@@ -523,12 +548,34 @@ Resources:
       Environment:
         Variables:
           REPORTS_TABLE: !Ref ReportsTable
-          RISK_CELLS_TABLE: !Ref RiskCellsTable
+          # Which function to ask for an alert when a report confirms a cell.
+          # The name, not the table: this handler still cannot touch Watchers.
+          NOTIFY_FUNCTION_NAME: !Ref NotifyCellFunction
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref ReportsTable
-        - DynamoDBReadPolicy:
-            TableName: !Ref RiskCellsTable
+        # PutItem to record the report, Query to count the recent ones in the
+        # same cell. That is the entire data path.
+        #
+        # This replaced DynamoDBCrudPolicy, which additionally granted
+        # DeleteItem, UpdateItem, BatchWriteItem and Scan. On the public,
+        # unauthenticated write path those are not conveniences, they are the
+        # difference between "a bug can write a bad report" and "a bug can
+        # delete the reports table's contents". Reports are the one asset here
+        # that cannot be regenerated.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:Query
+              Resource: !GetAtt ReportsTable.Arn
+        # The RiskCells read grant that used to sit here was dead: this handler
+        # has never read that table. Removed rather than left "in case".
+        - Statement:
+            # One ARN, one action. This is the whole of this function's ability
+            # to cause an alert to be sent -- it cannot read who will receive
+            # one, or reach the signing keys used to send it.
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !GetAtt NotifyCellFunction.Arn
       Events:
         SubmitReport:
           Type: HttpApi
@@ -620,10 +667,12 @@ Resources:
           RISK_CELLS_TABLE: !Ref RiskCellsTable
           REPORTS_TABLE: !Ref ReportsTable
       Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref RiskCellsTable
-        - DynamoDBReadPolicy:
-            TableName: !Ref ReportsTable
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource:
+                - !GetAtt RiskCellsTable.Arn
+                - !GetAtt ReportsTable.Arn
         - Statement:
             # Scoped to the provider resource rather than "*". GeoRoutes costs
             # materially more per request than tiles, which is exactly why it
@@ -705,6 +754,78 @@ Resources:
       RetentionInDays: 7
 
   # ----------------------------------------------------------------------------
+  # Immediate alerts for resident-confirmed flooding.
+  #
+  # Confirmed flooding is the strongest signal the system has, and it used to
+  # be the slowest to leave the building: submitReport recorded it and nobody
+  # was told until the next hourly run, up to 59 minutes later.
+  #
+  # It is a separate function rather than code inside submitReport so that the
+  # public, unauthenticated write path never gains the ability to read the
+  # Watchers table or reach the VAPID signing keys. submitReport can cause an
+  # alert; only this function can see who receives one.
+  #
+  # No event source. It is invoked asynchronously by submitReport and by
+  # nothing else, so it has no URL and no route.
+  # ----------------------------------------------------------------------------
+  NotifyCellFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/notifyCell.handler
+      Description: Alert watchers when residents confirm flooding in a cell.
+      # One conditional update, one watcher query, then a push per watcher to
+      # a third-party service. The same reasoning as the scoring function: the
+      # timeout must cover a slow push endpoint rather than truncate the send.
+      Timeout: 30
+      Environment:
+        Variables:
+          RISK_CELLS_TABLE: !Ref RiskCellsTable
+          WATCHERS_TABLE: !Ref WatchersTable
+          VAPID_PUBLIC_PARAMETER: !Sub "/${AWS::StackName}/vapid/public"
+          VAPID_PRIVATE_PARAMETER: !Sub "/${AWS::StackName}/vapid/private"
+          VAPID_SUBJECT: !Ref VapidSubject
+      Policies:
+        - Statement:
+            # GetItem is absent deliberately: the transition is claimed with a
+            # conditional UpdateItem rather than a read-then-write, so this
+            # function never needs to read a cell back.
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt RiskCellsTable.Arn
+            # Read the watchers of the confirmed cell, and delete the
+            # subscriptions the push service reports as retired. It cannot
+            # create one -- registration is saveWatch's job alone.
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:DeleteItem
+              Resource: !GetAtt WatchersTable.Arn
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/vapid/*"
+            - Effect: Allow
+              Action: kms:Decrypt
+              Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/notifyCell.ts
+
+  NotifyCellFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${NotifyCellFunction}"
+      RetentionInDays: 7
+
+  # ----------------------------------------------------------------------------
   # Hourly scoring. This is what makes the system live rather than a static
   # terrain map: it combines terrain with the rainfall forecast and the reports
   # standing in each cell, and writes back a score, a level and the sentence
@@ -746,11 +867,21 @@ Resources:
           VAPID_PRIVATE_PARAMETER: !Sub "/${AWS::StackName}/vapid/private"
           VAPID_SUBJECT: !Ref VapidSubject
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref RiskCellsTable
+        # Query to read the grid, BatchWriteItem to write it back. Not
+        # DynamoDBCrudPolicy, which would also grant DeleteItem, UpdateItem and
+        # Scan: this function rewrites all 1,140 cells every hour and should
+        # not be able to remove any of them.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:BatchWriteItem
+              Resource: !GetAtt RiskCellsTable.Arn
         # Reports are read to score them and never written by this function.
-        - DynamoDBReadPolicy:
-            TableName: !Ref ReportsTable
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !GetAtt ReportsTable.Arn
         - Statement:
             # Dispatch reads the watchers of a raised cell and deletes the
             # subscriptions the push service reports as retired. It cannot
@@ -802,6 +933,34 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${ScoreRiskFunction}"
       RetentionInDays: 7
 
+  # ----------------------------------------------------------------------------
+  # Where alarms go.
+  #
+  # Both alarms below have existed since Day 4 and, until now, notified nobody:
+  # they evaluated correctly, changed state correctly, and told no one. An
+  # alarm with no action is a dashboard widget, and the whole point of the
+  # stalled-scoring alarm is to be seen without anyone opening a dashboard.
+  #
+  # Email rather than SMS, for the same reason alerts to residents are web
+  # push: SMS to a Ghanaian number costs more per message than this stack costs
+  # per day. No KMS key on the topic -- these carry an alarm name and a state,
+  # nothing sensitive, and a customer-managed key would add cost for nothing.
+  # ----------------------------------------------------------------------------
+  OperationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: AFW operations
+
+  OperationsSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref OperationsTopic
+      Protocol: email
+      # AWS emails a confirmation link on first deploy. Until it is clicked the
+      # subscription stays "PendingConfirmation" and delivers nothing.
+      Endpoint: !Ref AlarmEmail
+
   # An hourly job that stops running is invisible until somebody notices the
   # map is stale. This makes it noisy instead: the metric is emitted on every
   # successful run, so "no data" for three hours is itself the alarm.
@@ -821,6 +980,9 @@ Resources:
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching
+      AlarmActions: [!Ref OperationsTopic]
+      # Worth knowing when it starts working again, not just when it stops.
+      OKActions: [!Ref OperationsTopic]
 
   # The forecast feed failing is not an outage -- the map degrades to terrain
   # and reports and says so. It is still worth knowing about.
@@ -840,6 +1002,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: notBreaching
+      AlarmActions: [!Ref OperationsTopic]
+      OKActions: [!Ref OperationsTopic]
 
 Outputs:
   SiteUrl:

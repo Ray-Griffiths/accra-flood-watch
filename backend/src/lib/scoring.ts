@@ -360,6 +360,26 @@ const DEPTH_WORDS: Record<DepthLevel, string> = {
 };
 
 /**
+ * The sentence a cell gets once residents have confirmed water in it.
+ *
+ * Exported because two code paths now reach this state and they must say the
+ * same thing: the hourly scoring run, and the immediate alert fired when a
+ * report is what tips the cell over. A person who gets the push and then opens
+ * the map must not be handed two differently worded accounts of one fact.
+ */
+export function explainConfirmed(
+  confirmingCount: number,
+  strongestDepth: DepthLevel | null | undefined,
+): string {
+  const depth = strongestDepth ? DEPTH_WORDS[strongestDepth] : "flooded";
+  return (
+    `People here are reporting water ${depth} right now. ` +
+    `${confirmingCount} independent reports in the last three hours. ` +
+    `Avoid this area.`
+  );
+}
+
+/**
  * One plain sentence justifying the level, built from whatever actually drove
  * the score.
  *
@@ -374,12 +394,7 @@ export function explain(input: ExplanationInput): string {
   // Confirmed flooding speaks first and on its own. Anything the terrain or
   // the forecast believes is now beside the point.
   if (scored.confirmed) {
-    const depth = reports.strongestDepth ? DEPTH_WORDS[reports.strongestDepth] : "flooded";
-    return (
-      `People here are reporting water ${depth} right now. ` +
-      `${reports.confirmingCount} independent reports in the last three hours. ` +
-      `Avoid this area.`
-    );
+    return explainConfirmed(reports.confirmingCount, reports.strongestDepth);
   }
 
   const parts: string[] = [];

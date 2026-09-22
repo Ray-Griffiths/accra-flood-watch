@@ -31,6 +31,32 @@ export function isDepthLevel(value: unknown): value is DepthLevel {
   return typeof value === "string" && (DEPTH_LEVELS as readonly string[]).includes(value);
 }
 
+/**
+ * The deepest water among a set of reported depths, or undefined if there are
+ * none.
+ *
+ * Ordering is read off `DEPTH_LEVELS`, which is already ascending, rather than
+ * restated as a second list. A separate severity ranking would be one more
+ * place to forget when a depth is added, and the failure would be silent: an
+ * alert quietly naming the second-worst water anybody reported.
+ */
+export function strongestDepth(
+  depths: readonly DepthLevel[],
+): DepthLevel | undefined {
+  let strongest: DepthLevel | undefined;
+  let rank = -1;
+
+  for (const depth of depths) {
+    const index = DEPTH_LEVELS.indexOf(depth);
+    if (index > rank) {
+      rank = index;
+      strongest = depth;
+    }
+  }
+
+  return strongest;
+}
+
 export const DEPTH_LABELS: Record<DepthLevel, string> = {
   ankle: "ankle deep",
   knee: "knee deep",

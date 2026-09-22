@@ -1,10 +1,11 @@
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { BatchWriteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
-import { dispatchAlerts, type VapidKeys } from "../lib/dispatch.ts";
+import { dispatchAlerts } from "../lib/dispatch.ts";
 import { documents, requireTable } from "../lib/dynamo.ts";
 import { fetchForecasts, nearestForecast, type ForecastPoint } from "../lib/forecast.ts";
 import { bounds, cellsCovering, neighbours } from "../lib/geohash.ts";
+import { emitMetrics } from "../lib/metrics.ts";
 import { isNewlyDangerous, type RaisedCell } from "../lib/notify.ts";
 import { PILOT_BBOX, PREFIX_PRECISION, prefixOfCell } from "../lib/pilot.ts";
 import type { DepthLevel } from "../lib/risk.ts";
@@ -18,6 +19,7 @@ import {
   type ScoringThresholds,
   type ScoringWeights,
 } from "../lib/scoring.ts";
+import { loadVapidKeys } from "../lib/vapid.ts";
 
 /**
  * Hourly risk recomputation. The job that makes this system live rather than a
@@ -108,43 +110,6 @@ async function loadTuning(): Promise<TuningParameters> {
   } catch (error) {
     console.error("Falling back to built-in tuning", error);
     return fallback;
-  }
-}
-
-/**
- * VAPID keys for signing push messages.
- *
- * The private half is a SecureString, which CloudFormation cannot create, so
- * both parameters are provisioned out of band and the template only grants
- * access to them by name. A stack that has never had them provisioned scores
- * normally and sends nothing, which is the right failure: the map staying
- * current matters more than the alerts, and a scoring run that threw because
- * a notification key was missing would leave last hour's numbers on screen
- * looking current.
- */
-async function loadVapidKeys(): Promise<VapidKeys | null> {
-  const publicName = process.env["VAPID_PUBLIC_PARAMETER"];
-  const privateName = process.env["VAPID_PRIVATE_PARAMETER"];
-  if (!publicName || !privateName) return null;
-
-  try {
-    const [publicResult, privateResult] = await Promise.all([
-      ssm.send(new GetParameterCommand({ Name: publicName })),
-      ssm.send(new GetParameterCommand({ Name: privateName, WithDecryption: true })),
-    ]);
-
-    const publicKey = publicResult.Parameter?.Value;
-    const privateKey = privateResult.Parameter?.Value;
-    if (!publicKey || !privateKey) return null;
-
-    return {
-      publicKey,
-      privateKey,
-      subject: process.env["VAPID_SUBJECT"] ?? "mailto:accrafloodwatch@example.com",
-    };
-  } catch (error) {
-    console.error("Could not load VAPID keys; alerts will not be sent", error);
-    return null;
   }
 }
 
@@ -256,32 +221,6 @@ async function writeInBatches(table: string, items: Record<string, unknown>[]): 
   }
 
   return written;
-}
-
-/**
- * Metrics in embedded format, so a silent failure of the forecast feed is
- * visible in CloudWatch rather than invisible.
- *
- * ForecastAvailable is the one that matters: the system keeps working without
- * a forecast, which is precisely why its absence has to be loud.
- */
-function emitMetrics(metrics: Record<string, number>): void {
-  console.log(
-    JSON.stringify({
-      _aws: {
-        Timestamp: Date.now(),
-        CloudWatchMetrics: [
-          {
-            Namespace: "AccraFloodWatch",
-            Dimensions: [["Environment"]],
-            Metrics: Object.keys(metrics).map((Name) => ({ Name })),
-          },
-        ],
-      },
-      Environment: process.env["ENVIRONMENT"] ?? "unknown",
-      ...metrics,
-    }),
-  );
 }
 
 export const handler = async (): Promise<{
