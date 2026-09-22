@@ -14,6 +14,7 @@
  */
 
 import type { Bounds } from "./geohash.ts";
+import { mergeBounds } from "./geometry.ts";
 import { CONFIRMING_DEPTHS, type DepthLevel } from "./risk.ts";
 
 export type TravelMode = "walking" | "driving";
@@ -89,6 +90,69 @@ export function classifyHazards(input: HazardInputs): Hazard[] {
   }
 
   return hazards;
+}
+
+/**
+ * Hard limit the GeoRoutes API places on `Avoid.Areas`.
+ *
+ * Documented as min 0, max 250 items. Exceeding it is not a degraded route,
+ * it is a `ValidationException` and no route at all -- and the corridor is
+ * most crowded with hazards during the storm this feature exists for, so the
+ * naive version fails exactly when it is needed.
+ */
+export const MAX_AVOID_AREAS = 250;
+
+/** Hard blocks are spent first, because they are the ones that cannot be traded. */
+const PRIORITY: Record<HazardReason, number> = { confirmed: 0, reported: 1, likely: 2 };
+
+/**
+ * The avoidance request: hazards coalesced into whole rectangles and trimmed
+ * to what the API will accept.
+ *
+ * Merging is what usually keeps the count down. A flooded stretch of road is
+ * a run of adjacent cells, and asking the router to avoid one rectangle
+ * instead of forty says the same thing in one fortieth of the budget.
+ *
+ * When even that is not enough, the budget is spent in evidence order:
+ * confirmed first, then reported, then the merely likely. Dropping a `likely`
+ * cell from the request costs a detour that would have been nice to have;
+ * dropping a confirmed one would cost the promise.
+ *
+ * Note what this function is NOT. It shapes a *request*, and the request is a
+ * preference the router may decline -- `Avoid.Areas` is best effort either
+ * way. The guarantee lives in `boxesOnPath`, which checks the returned
+ * geometry against every hard block, including any this had to leave out. So
+ * a trimmed request can cost a route; it cannot produce an unsafe one.
+ */
+export function avoidanceAreas(
+  hazards: readonly Hazard[],
+  limit = MAX_AVOID_AREAS,
+): Bounds[] {
+  if (hazards.length === 0) return [];
+
+  const byReason = new Map<HazardReason, Bounds[]>();
+  for (const hazard of hazards) {
+    const existing = byReason.get(hazard.reason);
+    if (existing) existing.push(hazard.bounds);
+    else byReason.set(hazard.reason, [hazard.bounds]);
+  }
+
+  // Merged within a reason rather than across all of them, so that a confirmed
+  // cell can never be absorbed into a `likely` rectangle and then dropped with
+  // it when the budget runs short.
+  const ordered = [...byReason.entries()].sort(
+    ([a], [b]) => (PRIORITY[a] ?? 99) - (PRIORITY[b] ?? 99),
+  );
+
+  const areas: Bounds[] = [];
+  for (const [, boxes] of ordered) {
+    for (const merged of mergeBounds(boxes)) {
+      if (areas.length >= limit) return areas;
+      areas.push(merged);
+    }
+  }
+
+  return areas;
 }
 
 // ---------------------------------------------------------------------------

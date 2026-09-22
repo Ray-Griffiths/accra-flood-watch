@@ -10,9 +10,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import type { Bounds } from "./geohash.ts";
+import type { Hazard, HazardReason } from "./routing.ts";
 import {
   DETOUR_NOTICE_METRES,
   DETOUR_NOTICE_SECONDS,
+  MAX_AVOID_AREAS,
+  avoidanceAreas,
   classifyHazards,
   describeDetour,
   explainNoSafeRoute,
@@ -270,5 +273,102 @@ describe("explainNoSafeRoute", () => {
       const message = explainNoSafeRoute(mode);
       assert.doesNotMatch(message, /with caution|if you must|at your own risk/i);
     }
+  });
+});
+
+/**
+ * The avoidance request.
+ *
+ * `Avoid.Areas` accepts at most 250 items, and a corridor in a storm holds
+ * far more hazard cells than that. Exceeding it is a ValidationException and
+ * no route at all -- the failure lands precisely when somebody is trying to
+ * get home through a flood, so the budget is tested at the boundary.
+ */
+describe("avoidanceAreas", () => {
+  /** `count` adjacent cells on one row, all with the same reason. */
+  function run(reason: HazardReason, count: number, south = 5.57): Hazard[] {
+    const hazards: Hazard[] = [];
+    for (let i = 0; i < count; i += 1) {
+      hazards.push({
+        cell: `${reason}-${i}`,
+        reason,
+        bounds: {
+          west: -0.22 + i * 0.002,
+          east: -0.22 + (i + 1) * 0.002,
+          south,
+          north: south + 0.002,
+        },
+      });
+    }
+    return hazards;
+  }
+
+  /** Cells deliberately spaced apart so none of them can merge. */
+  function scattered(reason: HazardReason, count: number): Hazard[] {
+    const hazards: Hazard[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const west = -0.25 + i * 0.004;
+      hazards.push({
+        cell: `${reason}-${i}`,
+        reason,
+        bounds: { west, east: west + 0.002, south: 5.57, north: 5.572 },
+      });
+    }
+    return hazards;
+  }
+
+  it("asks for nothing when there is nothing to avoid", () => {
+    assert.deepEqual(avoidanceAreas([]), []);
+  });
+
+  it("collapses a flooded stretch of road into one rectangle", () => {
+    const areas = avoidanceAreas(run("confirmed", 40));
+    assert.equal(areas.length, 1);
+  });
+
+  it("stays within the limit the API accepts", () => {
+    const areas = avoidanceAreas(scattered("likely", MAX_AVOID_AREAS * 2));
+    assert.equal(areas.length, MAX_AVOID_AREAS);
+  });
+
+  it("spends the budget on evidence before inference", () => {
+    // More `likely` cells than the whole budget, plus a handful of confirmed
+    // ones. The confirmed cells are the ones that must survive.
+    const confirmed = scattered("confirmed", 3);
+    const likely = run("likely", MAX_AVOID_AREAS + 50, 5.6);
+
+    const areas = avoidanceAreas([...likely, ...confirmed], 4);
+
+    for (const hazard of confirmed) {
+      assert.ok(
+        areas.some(
+          (box) =>
+            box.west <= hazard.bounds.west + 1e-9 && box.east >= hazard.bounds.east - 1e-9,
+        ),
+        `confirmed cell ${hazard.cell} was dropped from the request`,
+      );
+    }
+  });
+
+  it("never merges a confirmed cell into a likely rectangle", () => {
+    // Adjacent cells that differ only in reason. Merging across the two would
+    // let the confirmed one be discarded with the likely one it joined.
+    const hazards: Hazard[] = [
+      {
+        cell: "a",
+        reason: "likely",
+        bounds: { west: -0.22, east: -0.218, south: 5.57, north: 5.572 },
+      },
+      {
+        cell: "b",
+        reason: "confirmed",
+        bounds: { west: -0.218, east: -0.216, south: 5.57, north: 5.572 },
+      },
+    ];
+
+    const areas = avoidanceAreas(hazards);
+    assert.equal(areas.length, 2);
+    // Confirmed is emitted first, so the budget reaches it however tight.
+    assert.deepEqual(areas[0], hazards[1]!.bounds);
   });
 });

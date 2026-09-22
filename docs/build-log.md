@@ -1261,3 +1261,178 @@ possibly a map-centre report) and `ebzzdsx` (ankle, 16:20Z, 5.562391/-0.231453
 own and neither forces the view override. Community reports are the one
 irreplaceable asset here; deleting something merely because its provenance is
 unclear is the wrong default.
+
+## Review pass: six defects where the code disagreed with itself
+
+A read of the whole application against its own stated rules. Every item below
+is a place where a comment, a template, or a handler promised something the
+running system did not do. Nothing here is a new feature; all six are the
+existing design being made true.
+
+### 1. Every API error message was being discarded
+
+`lib/http.ts` returns `{ error: message }`. `web/src/api.ts` read
+`body.detail ?? body.title`. Neither field exists, so all ten `problem()` call
+sites collapsed to `"The service returned 422."` — including
+`"That location is outside the area Accra Flood Watch covers (Odaw basin:
+Korle Lagoon to Achimota)."`, which is the single most useful thing the report
+flow can say to somebody whose report was just refused.
+
+Nothing crashed and no test caught it, because **`api.ts` could not be loaded
+by the test runner at all**. `ApiError` used a TypeScript constructor
+parameter property, which `node --test --experimental-strip-types` cannot
+parse — it has to be compiled, not stripped. Vite built it happily, so the
+gap was invisible. Rewrote the field as a declaration plus an assignment and
+added `web/src/api.test.ts`: 7 tests over the failure paths, which is the
+first coverage this module has ever had.
+
+### 2. The risk overlay had no edge cache, despite being written for one
+
+`getRisk` sets `cache-control: public, max-age=60` with a comment explaining
+that a storm-time traffic spike must not become a DynamoDB spike. The `/api/*`
+behaviour used the managed **CachingDisabled** policy, which forces TTL 0 and
+ignores origin cache headers. The protection did not exist.
+
+Added `RiskCachePolicy` and an `/api/risk` behaviour above `/api/*` (first
+match wins, so the order is load-bearing). `MinTTL: 0` leaves the handler in
+charge, so a `no-store` response is still never cached. The cache key is the
+`bbox` query string and nothing else. GET/HEAD only — listing the write
+methods here would invite a future endpoint to be cached by accident.
+
+### 3. Safe routing would hard-fail in a storm
+
+`Avoid.Areas` accepts **at most 250 items**. `classifyHazards` is unbounded:
+it emits one hazard per `confirmed`, reported and `high` cell in the corridor,
+and a corridor holds thousands of cells. In heavy rain a short trip exceeds
+250 and earns a `ValidationException` — and there was no `try`/`catch` around
+`geoRoutes.send`, so that surfaced as a 500. The feature would break precisely
+during the weather it exists for.
+
+Added `mergeBounds` (`lib/geometry.ts`) and `avoidanceAreas` (`lib/routing.ts`):
+
+- **Merge.** Two-pass rectangle coalescing — join cells along a row, then join
+  rows that span the same extent. A flooded stretch of road is a run of
+  adjacent cells, so asking the router to avoid one rectangle instead of forty
+  says the same thing in one fortieth of the budget. Only exact merges: the
+  result covers the same ground, never more, because a box grown over dry
+  ground would close roads that are open.
+- **Trim.** If merging is not enough, the budget is spent confirmed → reported
+  → likely. Merging happens *within* a reason, so a confirmed cell can never
+  be absorbed into a `likely` rectangle and dropped with it.
+
+The important property: this shapes a *request*, and the request was always
+only a preference. `boxesOnPath` still checks the returned geometry against
+every hard block, including any that did not fit. **Trimming can cost a route;
+it cannot produce an unsafe one.** 11 new tests, including the boundary at 250
+and the cross-reason merge.
+
+### 4. An informational second call could kill the whole answer
+
+The direct route is calculated only to price the detour — "this adds nine
+minutes". It was awaited with `Promise.all`, so if it failed, the user lost
+the safe route they had actually asked for. Now `Promise.allSettled`: a failed
+comparison logs and yields `detour: null`, which the response shape already
+supported. A failure of the *avoided* route returns `found: false` with a
+sentence telling the user to check the map themselves, rather than a 500 the
+client can only report as an unreachable service.
+
+### 5. CloudFront was answering API 404s with the app shell
+
+`CustomErrorResponses` are distribution-wide — CloudFront applies them to
+whichever origin produced the status. The 404 → `index.html` (200) mapping was
+there for "client-side routing", but S3 behind Origin Access Control answers a
+missing object with **403, not 404**, so the static origin never needed it.
+What it did instead was turn every unmatched API route into HTML with a 200,
+which the client parsed as JSON and reported as a broken connection.
+
+Removed the 404 mapping; kept 403, which is the one S3 actually produces.
+`api.ts` now also refuses a non-JSON success body with a plain sentence rather
+than throwing a `SyntaxError` — belt and braces for any future edge rewrite.
+
+### 6. The masthead still advertised the original pilot
+
+`index.html` read `Circle · Kaneshie · Avenor`, hardcoded, while every message
+in the app and every rejection from the server named the Odaw catchment. The
+tagline is now filled from `coverage.description` — the same string the server
+uses — so extending coverage cannot leave one surface describing the old area.
+
+### Verification
+
+- `backend`: `tsc --noEmit` clean, **204 tests pass** (was 193).
+- `web`: `tsc --noEmit` clean, **52 tests pass** (was 45).
+- `sam validate --lint --region eu-west-1`: valid.
+- `npm run build`: succeeds.
+
+Not yet deployed — the CloudFront behaviour and cache policy change the
+distribution, so this goes out as a single `sam deploy` followed by a
+`/health` check and a live route request over a corridor with hazards in it.
+
+### Follow-up: the status pill, and a no-scroll rule that was already broken
+
+A design check flagged three cramped-padding findings in `index.html`. Two were
+false positives — the view-toggle *track* is correctly 2px, and the buttons
+inside it carry `min-height: 40px`, so zero vertical padding still yields a
+40px target. The third was real: `.status` sat at `0.35rem` (5.6px) vertical
+inside a coloured pill. Raised to `0.5rem 0.75rem` (8px/12px).
+
+Re-checking the 390x844 no-scroll rule afterwards turned up something bigger.
+Measured in a real browser at that viewport with every variable band carrying
+its **longest real text** at once:
+
+| band | height |
+|---|---|
+| masthead (catchment tagline + cached-data status) | 134.5px |
+| view bar ("Rain heavy enough to flood is forecast…") | 103.8px |
+| legend | 121px |
+| disclaimer (incl. action-bar clearance) | 172.7px |
+| **total** | **532px** |
+
+That leaves 312px for the map, and `min-height: 38vh` asks for 320.7px. So the
+page scrolled — **by 4px before the padding change and 9px after**. The rule
+CLAUDE.md states, and that the CSS comment restates, was already being broken;
+the padding change only made it visible.
+
+That combination is reachable, not contrived: a failed refresh sets the
+cached-data status and leaves the previous view reason standing.
+
+Lowered the floor to `min-height: 35vh`, which is the same lever used when the
+view bar was added and 55vh became too high. Verified at 390x844:
+
+- typical short texts: no scroll, map 350.1px, 54.7px above the floor.
+- worst case above: no scroll, map 312px, 16.6px above the floor.
+
+Nothing suppressed. The two false positives were left standing rather than
+ignored, because the only self-serve suppression available is rule-wide for the
+file, which would also mask a future real regression in it.
+
+Verification unchanged otherwise: backend 204 tests, web 52 tests, both
+typechecks clean, `sam validate --lint` valid, `npm run build` succeeds.
+
+### Deployed
+
+`sam build` + `sam deploy --region eu-west-1`, then `scripts/deploy-web.ps1`.
+Stack `accra-flood-watch` went `UPDATE_COMPLETE`; eight Lambda functions and
+the CloudFront distribution updated. Health checked before the deploy, between
+the two halves, and after: 200 throughout, 5,100 cells scored, forecast
+available. **The public URL was never interrupted.**
+
+Verified against the live URL rather than assumed:
+
+| fix | evidence |
+|---|---|
+| 1 — error sentences reach the user | `POST /api/reports` outside coverage returns 422 with *"That location is outside the area Accra Flood Watch covers (Odaw basin: Korle Lagoon to Achimota)."* A malformed bbox returns 400 with the bbox sentence. Both are now in `{ error }` and read by the client. |
+| 2 — `/api/risk` caches at the edge | Three requests to one bbox: `Miss` → `Hit` → `Hit`, `Age: 1`, `Cache-Control: public, max-age=60`. `/api/reports` stays `no-store` and `Miss` on every request — the split is exactly as intended. |
+| 3/4 — routing | A 4.4km walking route across the catchment returns 91 geometry points, 4430m and 4550s, with `hazardsInArea: 1` and a detour comparison. The avoidance and comparison paths both ran. |
+| 5 — API 404s are JSON again | `GET /api/does-not-exist` → **HTTP 404, `application/json`, `{"message":"Not Found"}`**. Before this deploy it was HTTP 200 with `text/html`. |
+| 6 — masthead reads coverage | Live page renders *"Odaw basin: Korle Lagoon to Achimota"*. |
+| layout | Live at 390x844: `min-height: 295.4px` (35vh), map 350.1px, 54.7px above the floor, **no scroll**, 0 console errors, risk cells painted. Screenshot: `docs/evidence/review-fixes-live-390x844.png`. |
+
+**One correction for CLAUDE.md:** the documented frontend command
+`npm run deploy:web` does not exist — `web/package.json` has no such script.
+The real entry point is `scripts/deploy-web.ps1`. Worth either adding the npm
+script or fixing the reference, since the documented command fails outright.
+
+Also note `deploy-web.ps1` sets `$ErrorActionPreference = "Stop"`, so invoking
+it with `2>&1` under Windows PowerShell 5.1 wraps vite's stderr as a
+NativeCommandError and aborts a build that actually succeeded. Run it without
+the redirect.

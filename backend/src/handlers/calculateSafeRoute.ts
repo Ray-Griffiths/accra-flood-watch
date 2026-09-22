@@ -9,6 +9,7 @@ import { json, problem } from "../lib/http.ts";
 import { describeCoverage, isInsideCoverage, prefixesForCorridor } from "../lib/pilot.ts";
 import type { DepthLevel } from "../lib/risk.ts";
 import {
+  avoidanceAreas,
   classifyHazards,
   explainNoSafeRoute,
   explainRoute,
@@ -30,6 +31,13 @@ import {
  *    route that violates one is discarded rather than displayed. The service's
  *    own violation notice is read too, but the geometric check is the
  *    guarantee: it does not depend on being told.
+ *
+ *    It also does not depend on the request having been expressible. The API
+ *    takes at most 250 avoidance areas and a storm produces more hazard cells
+ *    than that, so `avoidanceAreas` merges and trims what is asked for. The
+ *    check below still runs against every hard block, including any the
+ *    request could not carry — which is why trimming can cost a route but
+ *    cannot produce an unsafe one.
  *
  * 2. **A detour is stated.** When there is anything to avoid, the direct route
  *    is calculated as well, purely so the answer can say what the avoidance
@@ -164,8 +172,13 @@ interface CalculatedRoute {
 
 async function calculate(
   request: RouteRequest,
-  avoidAreas: readonly Hazard[],
+  hazards: readonly Hazard[],
 ): Promise<CalculatedRoute | null> {
+  // Coalesced and capped at what the API accepts. Anything left out is still
+  // checked against the returned geometry below, so this can cost a route but
+  // cannot let one through.
+  const areas = avoidanceAreas(hazards);
+
   const response = await geoRoutes.send(
     new CalculateRoutesCommand({
       Origin: [...request.origin],
@@ -176,17 +189,12 @@ async function calculate(
       // the check is the thing that makes this feature safe.
       LegGeometryFormat: "Simple",
       DepartNow: true,
-      ...(avoidAreas.length > 0
+      ...(areas.length > 0
         ? {
             Avoid: {
-              Areas: avoidAreas.map((hazard) => ({
+              Areas: areas.map((box) => ({
                 Geometry: {
-                  BoundingBox: [
-                    hazard.bounds.west,
-                    hazard.bounds.south,
-                    hazard.bounds.east,
-                    hazard.bounds.north,
-                  ],
+                  BoundingBox: [box.west, box.south, box.east, box.north],
                 },
               })),
             },
@@ -261,10 +269,35 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   // The direct route is calculated only when there is something to avoid, so
   // the ordinary dry-day request stays a single billed call.
-  const [safe, direct] = await Promise.all([
+  //
+  // Settled rather than all: the direct route exists solely to price the
+  // detour, and losing a sentence about how much longer the trip is must not
+  // cost the user the route they actually asked for.
+  const [safeOutcome, directOutcome] = await Promise.allSettled([
     calculate(parsed, hazards),
     hazards.length > 0 ? calculate(parsed, []) : Promise.resolve(null),
   ]);
+
+  if (safeOutcome.status === "rejected") {
+    // A routing service error is not a routing answer. Saying so beats a 500,
+    // which the client can only report as an unreachable service -- and the
+    // difference matters to somebody deciding whether to set out.
+    console.error("CalculateRoutes failed for the avoided route", safeOutcome.reason);
+    return json(200, {
+      found: false,
+      mode: parsed.mode,
+      reason: "no-route",
+      explanation:
+        "The routing service could not answer just now. Check the map for reported water " +
+        "along your way before you set out.",
+    });
+  }
+
+  const safe = safeOutcome.value;
+  if (directOutcome.status === "rejected") {
+    console.error("CalculateRoutes failed for the direct comparison", directOutcome.reason);
+  }
+  const direct = directOutcome.status === "fulfilled" ? directOutcome.value : null;
 
   if (!safe) {
     return json(200, {

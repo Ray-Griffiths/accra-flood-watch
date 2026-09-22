@@ -44,6 +44,7 @@ import {
 
 const elements = {
   map: document.querySelector<HTMLElement>("#map")!,
+  tagline: document.querySelector<HTMLElement>("#tagline")!,
   status: document.querySelector<HTMLElement>("#status")!,
   legend: document.querySelector<HTMLElement>("#legend")!,
   viewBar: document.querySelector<HTMLElement>(".view-bar")!,
@@ -415,6 +416,11 @@ async function start(): Promise<void> {
         description: config.pilotArea.name,
         envelope: config.pilotArea.bbox,
       };
+
+  // One source of truth for what this map covers. The masthead, the report
+  // sheet's rejection message and the server's 422 all read the same string,
+  // so extending coverage cannot leave one of them describing the old area.
+  elements.tagline.textContent = coverage.description;
 
   const envelope = (envelopeOf(coverage.areas) ?? coverage.envelope) as Bbox;
   const centre = config.coverage?.centre ?? config.pilotArea.centre;
