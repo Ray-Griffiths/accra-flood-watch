@@ -142,12 +142,18 @@ export interface SubmitResult {
  * completely different things to tell the user.
  */
 export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
+  // Declared and assigned rather than written as a constructor parameter
+  // property. The parameter-property form is TypeScript that has to be
+  // *compiled* rather than stripped, so it cannot be loaded by
+  // `node --test --experimental-strip-types` -- which quietly put this whole
+  // module out of reach of the test runner, and is how the error-field bug
+  // above went unnoticed. Vite would have built either form.
+  readonly status: number;
+
+  constructor(status: number, message: string) {
     super(message);
     this.name = "ApiError";
+    this.status = status;
   }
 }
 
@@ -160,19 +166,51 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    // The handlers return a `detail` field; fall back to the status if the
-    // body is empty or not JSON, which is what a gateway error looks like.
-    let detail = `The service returned ${response.status}.`;
-    try {
-      const body = (await response.json()) as { detail?: string; title?: string };
-      detail = body.detail ?? body.title ?? detail;
-    } catch {
-      /* keep the status-based message */
-    }
-    throw new ApiError(response.status, detail);
+    throw new ApiError(response.status, await readErrorMessage(response));
+  }
+
+  // A JSON endpoint that answers with HTML is CloudFront serving the shell in
+  // place of the API -- a custom error response, or a behaviour that has
+  // stopped matching /api/*. Saying so beats the `SyntaxError` that parsing it
+  // would throw, which reads like a bug in this file.
+  if (!isJson(response)) {
+    throw new ApiError(response.status, "The service sent an unexpected reply. Try again.");
   }
 
   return (await response.json()) as T;
+}
+
+function isJson(response: Response): boolean {
+  return (response.headers.get("content-type") ?? "").includes("json");
+}
+
+/**
+ * The sentence the handler wrote, or an honest substitute.
+ *
+ * `lib/http.ts` returns `{ error }`, and reading the wrong field here is not a
+ * cosmetic failure: it replaces "that location is outside the area this
+ * covers" with "the service returned 422", which tells the user nothing they
+ * can act on. `detail` and `title` are accepted too so that a gateway-shaped
+ * error body is still read rather than discarded.
+ */
+async function readErrorMessage(response: Response): Promise<string> {
+  const fallback = `The service returned ${response.status}.`;
+  if (!isJson(response)) return fallback;
+
+  try {
+    const body = (await response.json()) as {
+      error?: unknown;
+      detail?: unknown;
+      title?: unknown;
+    };
+    for (const candidate of [body.error, body.detail, body.title]) {
+      if (typeof candidate === "string" && candidate.trim() !== "") return candidate;
+    }
+  } catch {
+    /* Body was empty or malformed. The status is all there is to say. */
+  }
+
+  return fallback;
 }
 
 export function fetchConfig(): Promise<ClientConfig> {

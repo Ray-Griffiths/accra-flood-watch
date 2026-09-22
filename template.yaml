@@ -153,6 +153,42 @@ Resources:
               - variant
               - political-view
 
+  # The risk overlay is the dominant read, and the one that spikes hardest:
+  # rain over Accra means every phone with the app open is asking for the same
+  # handful of viewports at once. `getRisk` sets `cache-control: max-age=60`
+  # for exactly that reason, but the managed CachingDisabled policy on /api/*
+  # forces TTL 0 and ignores it, so the protection the handler believes it has
+  # did not exist. This policy honours the origin's own header.
+  #
+  # Sixty seconds is bounded by what the data can change in: scoring runs
+  # hourly, and the fast path that can move a cell sooner -- a report crossing
+  # into confirmed -- reaches the user through the push alert and /api/reports,
+  # neither of which is cached.
+  RiskCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-risk"
+        Comment: Brief edge caching for the risk overlay, keyed on the viewport.
+        DefaultTTL: 60
+        MaxTTL: 300
+        # Zero, so the handler stays in charge: a response it marks no-store
+        # is not cached, which is what keeps an error page from sticking.
+        MinTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            # The viewport IS the cache key. Anything else forwarded would
+            # fragment the cache without changing the answer.
+            QueryStringBehavior: whitelist
+            QueryStrings:
+              - bbox
+
   OriginAccessControl:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
@@ -200,6 +236,19 @@ Resources:
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed-CachingOptimized
           ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # Managed-SecurityHeadersPolicy
         CacheBehaviors:
+          # Ordered: CloudFront takes the first pattern that matches, so this
+          # must stay above /api/* or it will never be reached.
+          #
+          # The one API response worth caching at the edge. GET only -- the
+          # risk overlay is a read, and listing the write methods here would
+          # be inviting a future endpoint to be cached by accident.
+          - PathPattern: /api/risk
+            TargetOriginId: http-api
+            ViewerProtocolPolicy: https-only
+            Compress: true
+            AllowedMethods: [GET, HEAD]
+            CachePolicyId: !Ref RiskCachePolicy
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewerExceptHostHeader
           # Serving the API under the same origin means the browser makes
           # same-origin calls and no CORS preflight is ever needed.
           - PathPattern: /api/*
@@ -218,13 +267,19 @@ Resources:
             Compress: true
             AllowedMethods: [GET, HEAD, OPTIONS]
             CachePolicyId: !Ref TileCachePolicy
+        # Custom error responses are distribution-wide: CloudFront applies them
+        # to whichever origin produced the status, so every entry here is also
+        # an entry for the API.
+        #
+        # 404 used to be mapped and should not have been. S3 behind Origin
+        # Access Control answers a missing object with 403, not 404, so the
+        # static origin never needed it -- while API Gateway returns 404 for
+        # any unmatched route. The mapping turned that into index.html with a
+        # 200, so the client parsed HTML as JSON and reported a broken
+        # connection instead of a missing endpoint.
         CustomErrorResponses:
-          # Makes client-side routing work against a static origin.
+          # Serves the shell for a path S3 has no object for.
           - ErrorCode: 403
-            ResponseCode: 200
-            ResponsePagePath: /index.html
-            ErrorCachingMinTTL: 10
-          - ErrorCode: 404
             ResponseCode: 200
             ResponsePagePath: /index.html
             ErrorCachingMinTTL: 10

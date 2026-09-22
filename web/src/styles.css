@@ -96,7 +96,12 @@ body {
   margin: 0;
   font-size: 0.85rem;
   font-weight: 600;
-  padding: 0.35rem 0.6rem;
+  /* 8px/12px. The pill carries its own background, so text sitting 5.6px from
+     a coloured edge read as crowded. Raising it costs the map ~5px of flex
+     height, which the 38vh floor on a 390x844 phone absorbs with room to
+     spare -- measured, not assumed, because this layout has been pushed into
+     scrolling once before by a band that grew. */
+  padding: 0.5rem 0.75rem;
   border-radius: 999px;
   background: var(--pending-bg);
   color: var(--pending);
@@ -135,7 +140,15 @@ body {
    the previous 55vh floor too high. */
 .map {
   flex: 1;
-  min-height: 38vh;
+  /* 35vh, down from 38vh. Measured at 390x844 with every variable band at its
+     longest real text -- the catchment name in the tagline, the cached-data
+     status, and the "rain heavy enough to flood" view reason all present at
+     once, which is reachable: a failed refresh sets that status and leaves the
+     previous reason standing. That combination needs 532px of bands, leaving
+     312px for the map, and a 38vh floor asks for 320.7px. The page scrolled by
+     4px before the status pill was touched and 9px after. This floor restores
+     the rule the comment above states. */
+  min-height: 35vh;
   background: #e9eef0;
 }
 

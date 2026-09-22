@@ -100,6 +100,97 @@ export function boxesOnPath<T extends { bounds: Bounds }>(
   return boxes.filter((candidate) => pathIntersectsBox(path, candidate.bounds));
 }
 
+/**
+ * Tolerance for calling two grid edges the same edge.
+ *
+ * Geohash bounds come from repeated halving of [-180, 180] and [-90, 90], so
+ * two adjacent cells produce a bit-identical shared edge. The epsilon is
+ * insurance rather than necessity, and is four orders of magnitude below the
+ * 0.0007 degree height of a precision-7 cell, so it can never fuse cells that
+ * are genuinely apart.
+ */
+const EDGE_EPSILON = 1e-9;
+
+function same(a: number, b: number): boolean {
+  return Math.abs(a - b) <= EDGE_EPSILON;
+}
+
+/** Do these two boxes touch or overlap along the west-east axis? */
+function adjacentHorizontally(a: Bounds, b: Bounds): boolean {
+  return a.east >= b.west - EDGE_EPSILON && b.east >= a.west - EDGE_EPSILON;
+}
+
+function adjacentVertically(a: Bounds, b: Bounds): boolean {
+  return a.north >= b.south - EDGE_EPSILON && b.north >= a.south - EDGE_EPSILON;
+}
+
+function union(a: Bounds, b: Bounds): Bounds {
+  return {
+    west: Math.min(a.west, b.west),
+    south: Math.min(a.south, b.south),
+    east: Math.max(a.east, b.east),
+    north: Math.max(a.north, b.north),
+  };
+}
+
+/**
+ * Coalesce a set of grid cells into the smallest run of rectangles that covers
+ * exactly the same ground.
+ *
+ * Two passes: first join cells that share a full north-south edge into runs
+ * along a row, then join runs that span identical west-east extents into
+ * blocks. This is the classic two-pass rectangle coalescing, and it is not
+ * minimal -- an L-shaped flood stays two rectangles -- but a contiguous block
+ * of flooding, which is what flooding actually looks like, collapses from
+ * dozens of cells to one.
+ *
+ * Only exact merges are performed: the result covers the same area as the
+ * input, never more. That matters because the caller hands these to the router
+ * as areas to avoid, and a box grown over dry ground would close roads that
+ * are open.
+ */
+export function mergeBounds(boxes: readonly Bounds[]): Bounds[] {
+  if (boxes.length <= 1) return boxes.map((box) => ({ ...box }));
+
+  // Along each row: same south and north, touching along west-east.
+  const rows = [...boxes].sort((a, b) => a.south - b.south || a.west - b.west);
+  const runs: Bounds[] = [];
+
+  for (const box of rows) {
+    const previous = runs[runs.length - 1];
+    if (
+      previous &&
+      same(previous.south, box.south) &&
+      same(previous.north, box.north) &&
+      adjacentHorizontally(previous, box)
+    ) {
+      runs[runs.length - 1] = union(previous, box);
+      continue;
+    }
+    runs.push({ ...box });
+  }
+
+  // Stacked rows: same west and east, touching along south-north.
+  const columns = runs.sort((a, b) => a.west - b.west || a.south - b.south);
+  const blocks: Bounds[] = [];
+
+  for (const run of columns) {
+    const previous = blocks[blocks.length - 1];
+    if (
+      previous &&
+      same(previous.west, run.west) &&
+      same(previous.east, run.east) &&
+      adjacentVertically(previous, run)
+    ) {
+      blocks[blocks.length - 1] = union(previous, run);
+      continue;
+    }
+    blocks.push({ ...run });
+  }
+
+  return blocks;
+}
+
 /** The smallest box containing every point, grown by `padDegrees` on each side. */
 export function boundingBox(points: readonly Position[], padDegrees = 0): Bounds {
   let west = Number.POSITIVE_INFINITY;

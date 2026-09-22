@@ -15,6 +15,7 @@ import {
   boundingBox,
   boxesOnPath,
   isInsideBox,
+  mergeBounds,
   pathIntersectsBox,
   segmentIntersectsBox,
   type Position,
@@ -173,5 +174,85 @@ describe("boundingBox", () => {
     const box = boundingBox([[-0.22, 5.57]], 0.001);
     assert.equal(Math.round(box.west * 10000) / 10000, -0.221);
     assert.equal(Math.round(box.east * 10000) / 10000, -0.219);
+  });
+});
+
+/**
+ * Coalescing the avoidance request.
+ *
+ * The invariant under test is "same ground, fewer rectangles". A merge that
+ * quietly grew a box would close dry roads; one that dropped a cell would
+ * hand the router a hazard it was never told about. Both are checked by
+ * re-testing the original cells against the merged result.
+ */
+describe("mergeBounds", () => {
+  /** A run of `count` cells eastward from `west` on one row. */
+  function row(west: number, south: number, count: number): Bounds[] {
+    const boxes: Bounds[] = [];
+    for (let i = 0; i < count; i += 1) {
+      boxes.push({
+        west: west + i * 0.002,
+        east: west + (i + 1) * 0.002,
+        south,
+        north: south + 0.002,
+      });
+    }
+    return boxes;
+  }
+
+  it("leaves a single box alone", () => {
+    assert.deepEqual(mergeBounds([BOX]), [BOX]);
+  });
+
+  it("joins a run of adjacent cells into one rectangle", () => {
+    const merged = mergeBounds(row(-0.22, 5.57, 5));
+    assert.equal(merged.length, 1);
+    assert.deepEqual(merged[0], { west: -0.22, south: 5.57, east: -0.21, north: 5.572 });
+  });
+
+  it("joins stacked rows into a block", () => {
+    const block = [...row(-0.22, 5.57, 4), ...row(-0.22, 5.572, 4), ...row(-0.22, 5.574, 4)];
+    const merged = mergeBounds(block);
+    assert.equal(merged.length, 1);
+    assert.deepEqual(merged[0], { west: -0.22, south: 5.57, east: -0.212, north: 5.576 });
+  });
+
+  it("keeps a gap in the run as a gap", () => {
+    const split = [...row(-0.22, 5.57, 2), ...row(-0.21, 5.57, 2)];
+    const merged = mergeBounds(split);
+    assert.equal(merged.length, 2);
+  });
+
+  it("never reports a cell as merged away", () => {
+    const scattered = [
+      ...row(-0.22, 5.57, 3),
+      ...row(-0.22, 5.572, 3),
+      ...row(-0.2, 5.58, 1),
+      ...row(-0.19, 5.59, 2),
+    ];
+    const merged = mergeBounds(scattered);
+
+    // Every original cell centre must still fall inside something merged.
+    for (const cell of scattered) {
+      const centre: Position = [
+        (cell.west + cell.east) / 2,
+        (cell.south + cell.north) / 2,
+      ];
+      assert.ok(
+        merged.some((box) => isInsideBox(centre, box)),
+        `cell at ${centre.join(",")} was lost`,
+      );
+    }
+  });
+
+  it("does not grow over ground no cell covered", () => {
+    // An L: three cells along a row, one stacked on the western end. The
+    // merged result must not become the 3x2 rectangle that would swallow the
+    // two empty cells in the corner.
+    const shape = [...row(-0.22, 5.57, 3), ...row(-0.22, 5.572, 1)];
+    const merged = mergeBounds(shape);
+
+    const emptyCorner: Position = [-0.215, 5.573];
+    assert.ok(!merged.some((box) => isInsideBox(emptyCorner, box)));
   });
 });
