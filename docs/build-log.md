@@ -721,16 +721,73 @@ reports from one junction within seconds. Roughly half of them would currently
 fail, and fail looking like an outage rather than like backpressure.
 
 `ListRequestedServiceQuotaChangeHistory` for Lambda in `eu-west-1` returns zero
-requests — the increase the template has been deferring to since Day 3 has
-never actually been filed. Until it is, the burst limit of 20 is a ceiling the
-compute underneath cannot reach, and `ReservedConcurrentExecutions: 20` stays
-commented out at template.yaml:492.
+requests — the increase the template has been deferring to since Day 3 had
+never actually been filed. Trying to file it is where the session stopped being
+routine.
 
-Throttling was the half of this that could be fixed today. It is done. The
-other half needs an AWS approval with a multi-day lead time, and filing it is
-the next action.
+Throttling was the half of this that could be fixed today. It is done.
+
+### Why the quota increase could not be filed from here
+
+Attempting it returned something more informative than success:
+
+> `IllegalArgumentException: You must provide a quota value greater than the
+> default quota value of 1000.0`
+
+The numbers explain the whole situation:
+
+| | Value |
+|---|---|
+| Applied to this account | **10** |
+| AWS default for the quota | **1000** |
+
+The 10 is therefore **not the quota's default** — it is a new-account
+onboarding restriction sitting underneath a quota whose default is a hundred
+times larger. Service Quotas only brokers requests *above* a default, so it
+refuses to act on a value of 200: as far as that API is concerned this account
+already has 1000 and is asking to go down.
+
+Lifting a new-account restriction goes through Support, and the Support API
+returns `SubscriptionRequiredException` on this account — programmatic case
+creation needs a paid Premium Support plan. A service limit increase case is
+free to raise on Basic support, but only through the Support Center console.
+
+So this one cannot be automated from the agent, and the log should say so
+rather than leave a checkbox that looks fillable. Raised by hand instead; see
+the next entry for the outcome.
+
+The practical consequence for now: the burst limit of 20 on `POST /api/reports`
+is a ceiling the compute underneath cannot reach, and
+`ReservedConcurrentExecutions: 20` stays commented out at template.yaml:492.
+
+### The README was the one place overselling this project
+
+The build log has been candid about the flood points since Day 2. The README
+had not caught up, and the README is what gets read first.
+
+| Claim | Reality |
+|---|---|
+| "~50–100 recurring locations" | **8**, none verified |
+| Diagram shows `GeoPlaces` | Not used — the only reference in the codebase is a comment explaining why there is no place search |
+| Ghana Met Agency listed as a data source | Not integrated; Open-Meteo is the only feed called |
+| "Licence: MIT" | No `LICENSE` file existed |
+
+All four corrected, and the flood points now get a section of their own rather
+than a table row — including the fact that a historical point overrides the
+terrain model, which is why an unverified coordinate is a real problem and not
+a footnote. `LICENSE` added.
+
+Checked each against the source rather than against the Day 5 summary: the
+count came from importing `HISTORICAL_FLOOD_POINTS` and counting, and the
+GeoPlaces and Open-Meteo claims from grepping the handlers and the template.
+
+Note for later: the architecture diagram in `CLAUDE.md` still shows
+`GeoPlaces / GeoRoutes`. Left alone deliberately — it describes the intended
+API model rather than making a claim about what is built — but if place search
+never lands, that line should go too.
 
 ### Counts
 
-- 160 backend tests, 13 frontend tests, 0 failures. No code changed.
+- 160 backend tests, 13 frontend tests, 0 failures. No application code changed.
 - Reports: 0 items. Watchers: 0 items. RiskCells: 1,140 cells + 1 meta record.
+- Lambda concurrency still 10; the Support case is in, outcome pending.

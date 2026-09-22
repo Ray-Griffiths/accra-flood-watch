@@ -62,7 +62,7 @@ service survive past the competition. A 500-user pilot costs roughly $10–20/mo
 Browser (PWA) → CloudFront → S3 (static assets)
                     ↓ /api/*
               API Gateway HTTP API → Lambda ⇄ DynamoDB
-                                        ↘ GeoPlaces / GeoRoutes
+                                        ↘ GeoRoutes
                                         ↘ Web Push endpoints
 EventBridge Scheduler --hourly--> scoreRisk Lambda → forecast API + DynamoDB
 ```
@@ -123,10 +123,29 @@ curl https://<distribution>.cloudfront.net/api/health
 |---|---|---|
 | Copernicus DEM, 30m | Elevation → slope and Height Above Nearest Drainage | Registry of Open Data on AWS |
 | OpenStreetMap, Ghana | Roads, waterways, drains | Free extract, processed offline |
-| Open-Meteo | Hourly precipitation forecast | Free, no API key |
-| Ghana Meteorological Agency | Authoritative forecasts, used as cross-check | Public bulletins |
-| Historical flood points | ~50–100 recurring locations | Hand-encoded from NADMO reports, research and news coverage |
+| Open-Meteo | Hourly precipitation forecast — the only live feed the system calls | Free, no API key |
+| Historical flood points | **8 recurring locations, all currently unverified** | Hand-encoded; see below |
+
+### On the historical flood points
+
+There are **8** of them, and **none has been verified** against a primary
+source. They were encoded from general knowledge of Accra's flood geography —
+the locations are real and well-attested as flood-prone, but the coordinates
+are approximate and some may be off by a block.
+
+This is worth stating plainly because a historical point raises its cell's
+susceptibility to at least 75, which **overrides the terrain model**. A wrong
+coordinate therefore paints a warning onto a street that may not flood. Each
+entry in `preprocessing/flood_points.py` carries `verified: False`, and the
+build prints a warning for every unverified point it uses, so the gap cannot
+close silently. Verifying them against NADMO incident reports and published
+Odaw basin research is outstanding work, not finished work.
+
+The **Ghana Meteorological Agency** is the authoritative forecaster for Ghana
+and is cited throughout the app as where to go for official warnings. It is
+**not** a data source for this system — there is no GMet integration, and the
+only forecast feed called is Open-Meteo.
 
 ## Licence
 
-MIT
+MIT — see [`LICENSE`](LICENSE).
