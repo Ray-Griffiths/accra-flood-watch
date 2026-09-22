@@ -342,6 +342,36 @@ Resources:
         AllowHeaders: [content-type]
         AllowMethods: [GET, POST, DELETE, OPTIONS]
         MaxAge: 300
+      # Admission control. Without it the only thing capping an abusive burst
+      # is the account's Lambda concurrency, which is a limit that protects AWS
+      # rather than this project: reaching it starves the read path, and the
+      # bill for getting there arrives hours later through a budget alert.
+      #
+      # These are STAGE limits, not per-caller limits -- API Gateway does not
+      # do per-IP throttling, and WAF, which does, is out of scope. So this
+      # bounds total spend; it does not isolate one bad client from the rest.
+      # That is the right trade here, because uncontrolled cost is the risk
+      # that ends the project and a brief denial is the risk that annoys.
+      DefaultRouteSettings:
+        ThrottlingRateLimit: 40
+        ThrottlingBurstLimit: 80
+      RouteSettings:
+        # The unauthenticated write path. A person reporting water taps once;
+        # a burst of 20 covers several people at the same junction in the same
+        # few seconds, and 5/s sustained is 18,000 reports an hour -- orders of
+        # magnitude past anything the pilot area could legitimately produce.
+        "POST /api/reports":
+          ThrottlingRateLimit: 5
+          ThrottlingBurstLimit: 20
+        # Every call here is a GeoRoutes call, which costs materially more per
+        # request than anything else in the system. One deliberate tap each.
+        "POST /api/route":
+          ThrottlingRateLimit: 5
+          ThrottlingBurstLimit: 10
+        # One tap to save a place, and the browser re-registers on each visit.
+        "POST /api/watch":
+          ThrottlingRateLimit: 5
+          ThrottlingBurstLimit: 10
       AccessLogSettings:
         DestinationArn: !GetAtt ApiAccessLogGroup.Arn
         # Request bodies are deliberately excluded so that reported

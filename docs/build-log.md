@@ -628,3 +628,109 @@ stay below what flex would give, or it silently becomes a scrollbar.
 - 160 backend tests (up from 69), 13 frontend tests (new), 0 failures.
 - 6 Lambda functions, 3 DynamoDB tables, 1 hourly schedule, 2 alarms.
 - Evidence: `docs/evidence/day5-terrain-view.png`, `docs/evidence/day5-now-view.png`.
+
+---
+
+## Day 6 — 2026-09-22 — Throttling the abuse surface, and cleaning up after testing
+
+A review session rather than a feature session. Two things came out of it that
+were worth acting on immediately, and one finding that changes how urgent the
+Lambda quota increase is.
+
+### Stale test data was live on the public map
+
+`GET /api/reports` was serving a report submitted at 2026-09-21T21:17:06Z —
+ankle-deep water at 5.57, -0.22, showing to visitors as "12 hours ago". A test
+FCM push subscription was registered against cell `ebzzen0` alongside it.
+
+Day 5's log says both tables were emptied after verification. They were; a
+later session at 21:16–21:17 recreated them and did not clean up. The report's
+own TTL would have cleared it that evening, but until then anyone opening the
+app — including a judge — saw a flood report that no resident made.
+
+Both records deleted with conditional deletes. Both tables now hold zero items.
+The affected risk cell was unharmed: it read `basis: terrain-and-forecast` at
+score 46.3, so the single ankle-deep report never entered the score. One report
+marks a cell `reported`, not `confirmed`, and ankle is not a confirming depth.
+
+The lesson is not "remember to clean up". It is that nothing in the system
+distinguishes a test report from a real one, by design — reports carry no
+identity. So verification against production has to be paired with deletion in
+the same session, because afterwards there is no way to tell them apart.
+
+### The API had no throttling, despite the code saying it did
+
+`submitReport.ts` has carried this comment since Day 3:
+
+> That makes this the abuse surface, so validation here and throttling at the
+> API are what keep it honest.
+
+There was no throttling at the API. No `DefaultRouteSettings`, no
+`RouteSettings`, nothing in the template. The unauthenticated write path was
+open at whatever rate a client could generate.
+
+Now set on the `$default` stage:
+
+| Route | Rate | Burst |
+|---|---|---|
+| default (all routes) | 40/s | 80 |
+| `POST /api/reports` | 5/s | 20 |
+| `POST /api/route` | 5/s | 10 |
+| `POST /api/watch` | 5/s | 10 |
+
+`/api/route` is tightest per unit of harm: every call is a GeoRoutes call, the
+most expensive request the system makes.
+
+These are **stage** limits, not per-caller limits. API Gateway does not do
+per-IP throttling and WAF is out of scope, so this bounds total spend without
+isolating one bad client from everyone else. That is the right trade when
+uncontrolled cost is the risk that ends the project and brief denial is the
+risk that annoys — but it is a trade, not a fix, and it is written into the
+template so the next person does not have to rediscover it.
+
+### Verified against production
+
+Deployed via a reviewed changeset: twelve resources, all `Modify`, zero
+`Replacement`. CloudFront, S3 and all three DynamoDB tables untouched, so the
+public URL could not be disturbed. Health returned 200 before and after.
+
+Throttling verified behaviourally, not just by reading it back from the stage —
+a stored route key proves nothing about whether it matches a real route. The
+probe sends a deliberately invalid body, so any request that is *not* throttled
+returns 400 from the handler and writes nothing, which meant testing the write
+path on production without putting data back on the map it had just been
+cleaned off.
+
+- 120 concurrent requests through CloudFront → **exactly 25 reached the handler**,
+  which is burst 20 plus one second of refill at 5/s. The limit is exact.
+- A single request against a drained bucket → `429 Too Many Requests`.
+- Reports table still empty afterwards. Ship gate still 200.
+
+### The finding that matters more than the throttling
+
+Under the 120-request burst, most rejections came back **503, not 429** — and
+they did so against API Gateway directly, with CloudFront out of the path.
+
+That is not the stage throttle. It is Lambda. The burst limit of 20 admits 20
+simultaneous requests, and this account's Lambda concurrency is still the
+new-account default of **10**, so half of an admitted burst is rejected by the
+integration and surfaces as Service Unavailable.
+
+This is exactly the shape of a real event: a storm produces a cluster of
+reports from one junction within seconds. Roughly half of them would currently
+fail, and fail looking like an outage rather than like backpressure.
+
+`ListRequestedServiceQuotaChangeHistory` for Lambda in `eu-west-1` returns zero
+requests — the increase the template has been deferring to since Day 3 has
+never actually been filed. Until it is, the burst limit of 20 is a ceiling the
+compute underneath cannot reach, and `ReservedConcurrentExecutions: 20` stays
+commented out at template.yaml:492.
+
+Throttling was the half of this that could be fixed today. It is done. The
+other half needs an AWS approval with a multi-day lead time, and filing it is
+the next action.
+
+### Counts
+
+- 160 backend tests, 13 frontend tests, 0 failures. No code changed.
+- Reports: 0 items. Watchers: 0 items. RiskCells: 1,140 cells + 1 meta record.
