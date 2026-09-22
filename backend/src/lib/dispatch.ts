@@ -18,7 +18,8 @@
 import { DeleteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import webpush from "web-push";
 
-import { documents } from "./dynamo.ts";
+import { documents, queryAll } from "./dynamo.ts";
+import { neighbours } from "./geohash.ts";
 import { alertFor, type RaisedCell } from "./notify.ts";
 
 /**
@@ -56,14 +57,67 @@ interface WatcherItem {
 }
 
 async function watchersOf(table: string, cell: string): Promise<WatcherItem[]> {
-  const result = await documents.send(
+  return queryAll<WatcherItem>(
     new QueryCommand({
       TableName: table,
       KeyConditionExpression: "cell = :cell",
       ExpressionAttributeValues: { ":cell": cell },
     }),
   );
-  return (result.Items ?? []) as WatcherItem[];
+}
+
+/**
+ * Every cell whose watchers need telling when `cell` floods: the cell itself
+ * and its eight neighbours.
+ *
+ * A watch is registered against one 152m cell — the one the user tapped. Water
+ * does not respect that boundary. Somebody who saved their home and then
+ * watched the next cell along go under, with no alert, has been failed by the
+ * feature in a way they can only interpret as it not working.
+ *
+ * `neighbours` is symmetric, so querying the raised cell's own neighbourhood
+ * finds exactly the watchers within one cell of it.
+ */
+function neighbourhoodOf(cell: string): string[] {
+  return [cell, ...neighbours(cell)];
+}
+
+/**
+ * Watchers for every cell in one pass, deduplicated.
+ *
+ * Built as a single map before dispatch rather than queried per raised cell.
+ * Raised cells in a storm are contiguous, so their neighbourhoods overlap
+ * almost completely — without this, expanding to neighbours would multiply the
+ * read count by nine at exactly the moment the table is busiest.
+ */
+async function loadWatchers(
+  table: string,
+  cells: readonly string[],
+): Promise<Map<string, WatcherItem[]>> {
+  const wanted = new Set<string>();
+  for (const cell of cells) {
+    for (const near of neighbourhoodOf(cell)) wanted.add(near);
+  }
+
+  const byCell = new Map<string, WatcherItem[]>();
+  const distinct = [...wanted];
+
+  const results = await Promise.all(
+    distinct.map(async (cell) => {
+      try {
+        return await watchersOf(table, cell);
+      } catch (error) {
+        console.error(`Could not read watchers for ${cell}`, error);
+        return [];
+      }
+    }),
+  );
+
+  for (const [index, watchers] of results.entries()) {
+    byCell.set(distinct[index]!, watchers);
+  }
+
+  return byCell;
 }
 
 /**
@@ -88,6 +142,17 @@ export async function dispatchAlerts(
 
   webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
 
+  const byCell = await loadWatchers(
+    table,
+    raised.map((cell) => cell.cell),
+  );
+
+  // One alert per subscription per run. A storm raises a block of adjacent
+  // cells at once, and without this a watcher standing in the middle of it
+  // would get an alert for every cell around them — which is not nine times
+  // the information, it is how somebody turns notifications off.
+  const alerted = new Set<string>();
+
   for (const cell of raised) {
     if (result.sent + result.failed >= MAX_ALERTS_PER_RUN) {
       result.capped = true;
@@ -95,12 +160,13 @@ export async function dispatchAlerts(
       break;
     }
 
-    let watchers: WatcherItem[];
-    try {
-      watchers = await watchersOf(table, cell.cell);
-    } catch (error) {
-      console.error(`Could not read watchers for ${cell.cell}`, error);
-      continue;
+    const watchers: WatcherItem[] = [];
+    for (const near of neighbourhoodOf(cell.cell)) {
+      for (const watcher of byCell.get(near) ?? []) {
+        if (alerted.has(watcher.subscriptionId)) continue;
+        alerted.add(watcher.subscriptionId);
+        watchers.push(watcher);
+      }
     }
     if (watchers.length === 0) continue;
 

@@ -4,7 +4,8 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
-import { documents, requireTable } from "../lib/dynamo.ts";
+import { documents, queryAll, requireTable } from "../lib/dynamo.ts";
+import { resolveObservedAt } from "../lib/observed.ts";
 import { json, problem } from "../lib/http.ts";
 import { cellFor, describeCoverage, isInsideCoverage, prefixFor } from "../lib/pilot.ts";
 import {
@@ -70,15 +71,27 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     );
   }
 
+  const now = new Date();
+
+  // A report that was held on the device while it had no signal carries the
+  // moment it was OBSERVED, not the moment it arrived. Without that, a report
+  // queued offline and delivered twenty minutes later is written as current,
+  // and water that has since drained keeps a street marked impassable -- or
+  // worse, confirms a cell on the strength of two observations that are no
+  // longer true.
+  const observed = resolveObservedAt((payload as Record<string, unknown>)["observedAt"], now);
+  if (typeof observed === "string") return problem(422, observed);
+
   const cell = cellFor(latitude, longitude);
   const cellPrefix = prefixFor(latitude, longitude);
-  const now = new Date();
-  const submittedAt = now.toISOString();
+  const submittedAt = observed.toISOString();
 
   // Timestamp-prefixed so the sort key orders reports by age within an area,
   // and the random suffix keeps concurrent submissions distinct.
   const reportId = `${submittedAt}#${randomUUID()}`;
-  const expiresAt = Math.floor(now.getTime() / 1000) + REPORT_TTL_HOURS * 3600;
+  // Expiry runs from the observation too, so a queued report still vanishes
+  // 24 hours after the water was seen rather than 24 hours after it uploaded.
+  const expiresAt = Math.floor(observed.getTime() / 1000) + REPORT_TTL_HOURS * 3600;
 
   const reportsTable = requireTable("REPORTS_TABLE");
 
@@ -149,7 +162,7 @@ async function evaluateConfirmation(
     now.getTime() - CONFIRMATION_WINDOW_MINUTES * 60_000,
   ).toISOString();
 
-  const result = await documents.send(
+  const recent = await queryAll<ExistingReport>(
     new QueryCommand({
       TableName: table,
       KeyConditionExpression: "cellPrefix = :prefix AND reportId >= :since",
@@ -158,7 +171,7 @@ async function evaluateConfirmation(
   );
 
   const nowSeconds = Math.floor(now.getTime() / 1000);
-  const qualifying = ((result.Items ?? []) as ExistingReport[]).filter(
+  const qualifying = recent.filter(
     (item) =>
       item.cell === cell &&
       item.expiresAt > nowSeconds &&

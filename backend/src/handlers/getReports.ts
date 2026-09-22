@@ -1,10 +1,16 @@
 ﻿import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 
-import { documents, requireTable } from "../lib/dynamo.ts";
+import { queryAll, requireTable } from "../lib/dynamo.ts";
 import { json, problem } from "../lib/http.ts";
 import { parseBbox, prefixesForViewport } from "../lib/pilot.ts";
-import { DEPTH_LABELS, type DepthLevel } from "../lib/risk.ts";
+import {
+  CONFIRMATION_REPORT_COUNT,
+  CONFIRMATION_WINDOW_MINUTES,
+  CONFIRMING_DEPTHS,
+  DEPTH_LABELS,
+  type DepthLevel,
+} from "../lib/risk.ts";
 
 interface ReportItem {
   cellPrefix: string;
@@ -39,7 +45,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   const results = await Promise.all(
     prefixes.map((prefix) =>
-      documents.send(
+      queryAll<ReportItem>(
         new QueryCommand({
           TableName: table,
           KeyConditionExpression: "cellPrefix = :prefix",
@@ -52,7 +58,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   );
 
   const reports = results
-    .flatMap((result) => (result.Items ?? []) as ReportItem[])
+    .flat()
     // TTL deletion is eventual, so an expired item can still be returned by a
     // query for a short window. Filter on read rather than showing a report
     // the application has promised would be gone.
@@ -86,10 +92,46 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   return json(200, {
     reports,
     reportCount: reports.length,
+    // Cells residents have confirmed since the last scoring run.
+    //
+    // The hourly job is what normally sets `confirmed`, which means a cell can
+    // sit for up to an hour showing `watch` while the push alert already told
+    // somebody there is water in it. The map and the notification disagreeing
+    // about one fact is worse than either being slightly stale.
+    //
+    // Computed here rather than in the browser on purpose: the rule -- two
+    // independent reports at a confirming depth inside three hours -- is the
+    // project's own definition of confirmed flooding, and it must have exactly
+    // one implementation. Duplicating the constants client-side would let the
+    // two drift silently, and the drift would show up as a map that disagrees
+    // with itself.
+    confirmedCells: confirmedCells(reports, Date.now()),
     truncated,
     generatedAt: new Date().toISOString(),
   });
 };
+
+/** Cells with enough recent corroboration to count as confirmed flooding. */
+function confirmedCells(
+  reports: ReadonlyArray<{ cell: string; depth: DepthLevel; submittedAt: string }>,
+  now: number,
+): string[] {
+  const counts = new Map<string, number>();
+
+  for (const report of reports) {
+    if (!(CONFIRMING_DEPTHS as readonly string[]).includes(report.depth)) continue;
+
+    const age = (now - Date.parse(report.submittedAt)) / 60_000;
+    if (!Number.isFinite(age) || age < 0 || age > CONFIRMATION_WINDOW_MINUTES) continue;
+
+    counts.set(report.cell, (counts.get(report.cell) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .filter(([, count]) => count >= CONFIRMATION_REPORT_COUNT)
+    .map(([cell]) => cell)
+    .sort();
+}
 
 function describeAge(minutes: number): string {
   if (minutes < 1) return "just now";

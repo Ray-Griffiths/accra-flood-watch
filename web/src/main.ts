@@ -19,6 +19,7 @@ import {
   type RiskResponse,
 } from "./api.ts";
 import { describeAge, loadRisk, storeRisk } from "./cache.ts";
+import { flush as flushQueue, pendingCount } from "./queue.ts";
 import { envelopeOf, type Coverage } from "./pilot.ts";
 import {
   RISK_MIN_ZOOM,
@@ -63,6 +64,24 @@ let handles: MapHandles | null = null;
 let currentReports: FloodReport[] = [];
 let currentCells: RiskCell[] = [];
 let refreshTimer: number | undefined;
+let pollTimer: number | undefined;
+/** Cells the server says residents have confirmed since the last scoring run. */
+let confirmedByReports = new Set<string>();
+
+/**
+ * How often to re-read while the app is open and on screen.
+ *
+ * Until now the map only refreshed on a pan or on returning to the tab, so
+ * somebody watching a storm develop — holding the phone, not touching it —
+ * saw the same reading for an hour. That is the one situation where this
+ * application has something new to say every few minutes.
+ *
+ * Five minutes against an hourly scoring job is deliberately faster than the
+ * data changes: reports arrive continuously and are what move a cell to
+ * confirmed. The requests are cheap — /api/risk is cached at the edge for 60s,
+ * so a screenful of users mostly share one origin read.
+ */
+const POLL_INTERVAL_MS = 5 * 60_000;
 
 /** What the user last chose, if anything. Null means "follow the weather". */
 let manualView: MapView | null = null;
@@ -230,8 +249,18 @@ async function refreshForViewport(): Promise<void> {
 
   const [risk, reports] = await Promise.allSettled([fetchRisk(bbox), fetchReports(bbox)]);
 
+  // Reports are read first so that a cell confirmed since the last scoring run
+  // is already known before the risk cells are painted. Painting twice would
+  // flash a `watch` cell red a moment later, which reads as the map changing
+  // its mind.
+  if (reports.status === "fulfilled") {
+    currentReports = reports.value.reports;
+    confirmedByReports = new Set(reports.value.confirmedCells ?? []);
+    handles.setReports(currentReports);
+  }
+
   if (risk.status === "fulfilled") {
-    currentCells = risk.value.cells;
+    currentCells = withReportedConfirmations(risk.value.cells);
     handles.setRisk(currentCells);
     storeRisk(bbox, risk.value);
     lastRisk = risk.value;
@@ -248,17 +277,81 @@ async function refreshForViewport(): Promise<void> {
       "error",
     );
   }
+}
 
-  if (reports.status === "fulfilled") {
-    currentReports = reports.value.reports;
-    handles.setReports(currentReports);
-  }
+/**
+ * Raise a cell to `confirmed` when residents have confirmed it since the last
+ * scoring run.
+ *
+ * Only ever upgrades. The hourly job's answer is authoritative in every other
+ * direction — this closes the window where a push alert has already told
+ * somebody there is water in a cell the map still calls `watch`, and does
+ * nothing else.
+ */
+function withReportedConfirmations(cells: RiskCell[]): RiskCell[] {
+  if (confirmedByReports.size === 0) return cells;
+
+  return cells.map((cell) =>
+    cell.level === "confirmed" || !confirmedByReports.has(cell.cell)
+      ? cell
+      : { ...cell, level: "confirmed" },
+  );
+}
+
+/**
+ * Send anything the device held while it was offline.
+ *
+ * Runs on load and whenever the browser regains a connection. `online` is a
+ * hint rather than a guarantee -- it fires for a captive portal too -- so a
+ * failed flush simply leaves the reports queued for the next attempt.
+ */
+function installQueueFlush(): void {
+  const attempt = (): void => {
+    void flushQueue().then((result) => {
+      if (result.sent > 0) {
+        setStatus(
+          result.sent === 1
+            ? "Your saved report has been sent."
+            : `${result.sent} saved reports have been sent.`,
+          "ok",
+        );
+        // The map does not yet know about them.
+        void refreshForViewport();
+      } else if (result.expired > 0) {
+        setStatus(
+          result.expired === 1
+            ? "A saved report was too old to send and has been discarded."
+            : `${result.expired} saved reports were too old to send and have been discarded.`,
+          "warn",
+        );
+      }
+    });
+  };
+
+  window.addEventListener("online", attempt);
+  if (pendingCount() > 0) attempt();
 }
 
 function scheduleRefresh(): void {
   window.clearTimeout(refreshTimer);
   // Panning fires continuously; one request per settled viewport, not per frame.
   refreshTimer = window.setTimeout(() => void refreshForViewport(), 350);
+}
+
+/**
+ * Keep the reading current while the app is on screen, and stop the moment it
+ * is not.
+ *
+ * Polling a hidden tab would spend a backgrounded phone's battery and data on
+ * a map nobody is looking at — and browsers throttle timers there anyway, so
+ * it would not even be reliable. The visibility handler already refreshes on
+ * return, which covers the gap.
+ */
+function startPolling(): void {
+  window.clearInterval(pollTimer);
+  pollTimer = window.setInterval(() => {
+    if (document.visibilityState === "visible") void refreshForViewport();
+  }, POLL_INTERVAL_MS);
 }
 
 function openDetailFor(cell: string, sheet: DetailSheet): void {
@@ -515,7 +608,7 @@ async function start(): Promise<void> {
         return;
       }
 
-      currentCells = result.cells;
+      currentCells = withReportedConfirmations(result.cells);
       handles?.setRisk(currentCells);
       storeRisk(openingBbox, result);
       lastRisk = result;
@@ -526,13 +619,23 @@ async function start(): Promise<void> {
     void fetchReports(openingBbox)
       .then((response) => {
         currentReports = response.reports;
+        confirmedByReports = new Set(response.confirmedCells ?? []);
         handles?.setReports(currentReports);
+        // The risk response may already have been painted, so re-apply rather
+        // than wait for the next pan.
+        if (currentCells.length > 0 && confirmedByReports.size > 0) {
+          currentCells = withReportedConfirmations(currentCells);
+          handles?.setRisk(currentCells);
+          applyViewDecision();
+        }
       })
       .catch(() => {
         /* Reports are additive. Their absence is not worth an error banner. */
       });
 
     map.on("moveend", scheduleRefresh);
+    startPolling();
+    installQueueFlush();
 
     // One click handler on the map, not on the risk layers, so a destination
     // can be chosen anywhere -- including over water, a park, or a gap in the

@@ -115,6 +115,14 @@ export interface FloodReport {
 export interface ReportsResponse {
   reports: FloodReport[];
   reportCount: number;
+  /**
+   * Cells residents have confirmed since the last hourly scoring run.
+   *
+   * The server owns the rule that decides this. The client's only job is to
+   * paint the cells it names, so that the map agrees with the push alert a
+   * user may have just received rather than waiting up to an hour to catch up.
+   */
+  confirmedCells?: string[];
   truncated?: boolean;
   outsideCoverage?: boolean;
   generatedAt: string;
@@ -157,12 +165,42 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * How long to wait before giving up on a request.
+ *
+ * A mobile connection does not fail cleanly. It stalls: the socket opens, the
+ * request goes out, and nothing ever comes back. `fetch` has no default
+ * timeout, so without this the interface sits on "Loading flood risk…"
+ * indefinitely — and the cached-risk fallback, which exists precisely for a
+ * dead connection, is never reached because the promise never settles.
+ *
+ * Eight seconds matches the forecast client's own timeout on the server. Long
+ * enough for a slow 3G round trip, short enough that somebody in the rain gets
+ * an answer.
+ */
+const REQUEST_TIMEOUT_MS = 8000;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
   let response: Response;
   try {
-    response = await fetch(path, { cache: "no-store", ...init });
-  } catch {
+    response = await fetch(path, {
+      cache: "no-store",
+      signal: controller.signal,
+      ...init,
+    });
+  } catch (error) {
+    // A timeout and a refused connection are the same thing to the user --
+    // the service cannot be reached -- so they get the same sentence. The
+    // distinction is kept in the console for whoever is debugging it.
+    if (error instanceof DOMException && error.name === "AbortError") {
+      console.warn(`${path} timed out after ${REQUEST_TIMEOUT_MS}ms`);
+    }
     throw new ApiError(0, "Cannot reach the service. Check your connection.");
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!response.ok) {
@@ -291,14 +329,25 @@ export function calculateRoute(
   });
 }
 
+/**
+ * `observedAt` is sent only for a report that waited on the device. The server
+ * writes it as the report's timestamp, so a queued report describes when the
+ * water was seen rather than when the connection came back.
+ */
 export function submitReport(
   latitude: number,
   longitude: number,
   depth: Depth,
+  observedAt?: string,
 ): Promise<SubmitResult> {
   return request<SubmitResult>("/api/reports", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ latitude, longitude, depth }),
+    body: JSON.stringify({
+      latitude,
+      longitude,
+      depth,
+      ...(observedAt ? { observedAt } : {}),
+    }),
   });
 }

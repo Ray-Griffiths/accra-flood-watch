@@ -9,6 +9,7 @@
  */
 
 import { levelStyle, terrainStyle, type MapView } from "./levels.ts";
+import { attachSheetBehaviour, type SheetBehaviour } from "./sheet.ts";
 
 export interface CellDetail {
   cell: string;
@@ -47,6 +48,7 @@ export class DetailSheet {
   private readonly root: HTMLElement;
   private readonly body: HTMLElement;
   private readonly closeButton: HTMLButtonElement;
+  private readonly behaviour: SheetBehaviour;
 
   constructor(
     root: HTMLElement,
@@ -57,13 +59,15 @@ export class DetailSheet {
     this.closeButton = root.querySelector<HTMLButtonElement>(".sheet__close")!;
 
     this.closeButton.addEventListener("click", () => this.close());
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") this.close();
-    });
+    // Escape now fires only while THIS sheet is open. The previous listener
+    // ran on every keypress regardless, so Escape in the report sheet also
+    // closed a detail sheet nobody could see.
+    this.behaviour = attachSheetBehaviour(root, () => this.close());
   }
 
   close(): void {
     this.root.hidden = true;
+    this.behaviour.closed();
   }
 
   show(detail: CellDetail): void {
@@ -83,6 +87,7 @@ export class DetailSheet {
       ...compact([this.renderWatch?.(detail) ?? null]),
     );
 
+    this.behaviour.opened();
     this.root.hidden = false;
     // Focus moves to the close button so a keyboard or screen-reader user is
     // inside the sheet rather than still back on the map.

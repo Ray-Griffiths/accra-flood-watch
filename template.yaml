@@ -210,8 +210,20 @@ Resources:
         DefaultRootObject: index.html
         HttpVersion: http2and3
         IPV6Enabled: true
-        # PriceClass 100 covers Europe, which is what serves Accra.
-        PriceClass: PriceClass_100
+        # PriceClass 200 is what puts this map on an African edge.
+        #
+        # PriceClass_100 stops at the USA, Canada, Europe and Israel -- it has
+        # NO African edge locations, so every tile for a user in Accra was
+        # served from Europe, about 5,000km away. PriceClass_200 adds Lagos,
+        # roughly 400km down the coast, along with Nairobi, Johannesburg and
+        # Cape Town.
+        #
+        # African data transfer is dearer per GB (~$0.11 against ~$0.085 in
+        # Europe), which at pilot volume is cents a month. The users this is
+        # built for are on mid-range Android phones on Ghanaian mobile data,
+        # and first paint is the thing they experience. That trade is worth
+        # making in their favour.
+        PriceClass: PriceClass_200
         Origins:
           - Id: s3-web
             DomainName: !GetAtt WebBucket.RegionalDomainName
@@ -1025,7 +1037,10 @@ Resources:
       AlarmName: !Sub "${AWS::StackName}-scoring-stalled"
       AlarmDescription: Risk scoring has not completed successfully in three hours.
       Namespace: AccraFloodWatch
-      MetricName: CellsScored
+      # ScoringRuns, not CellsScored. The job now skips cells whose answer has
+      # not changed, so a dry day writes nothing at all -- and an alarm on the
+      # write count would read a correctly idle system as a stopped one.
+      MetricName: ScoringRuns
       Dimensions:
         - Name: Environment
           Value: !Ref Environment
@@ -1041,6 +1056,66 @@ Resources:
 
   # The forecast feed failing is not an outage -- the map degrades to terrain
   # and reports and says so. It is still worth knowing about.
+  # A push alert that fails is invisible by construction: nobody complains
+  # about a warning they never knew was coming. This is the only thing that
+  # makes that failure mode observable.
+  AlertsFailingAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-alerts-failing"
+      AlarmDescription: Web push alerts are being rejected by the push services.
+      Namespace: AccraFloodWatch
+      MetricName: AlertsFailed
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      # No alerts sent is not a failure. Absence here means a quiet hour.
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref OperationsTopic]
+
+  # The API answering 5xx is the ship gate failing in the only way that does
+  # not show up as the site being down.
+  ApiServerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-api-5xx"
+      AlarmDescription: The HTTP API is returning server errors.
+      Namespace: AWS/ApiGateway
+      MetricName: 5xx
+      Dimensions:
+        - Name: ApiId
+          Value: !Ref HttpApi
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref OperationsTopic]
+
+  # Function-level failures, across every handler at once. Deliberately not one
+  # alarm per function: eight near-identical alarms is eight things to keep in
+  # step, and the log group names in the notification say which one broke.
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-lambda-errors"
+      AlarmDescription: Lambda functions in this stack are throwing.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref OperationsTopic]
+
   ForecastFeedAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:

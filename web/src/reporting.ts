@@ -19,6 +19,8 @@
 
 import { ApiError, submitReport, type Depth, type SubmitResult } from "./api.ts";
 import { isInsideCoverage, type Coverage } from "./pilot.ts";
+import { enqueue, MAX_QUEUE_AGE_MINUTES } from "./queue.ts";
+import { attachSheetBehaviour, type SheetBehaviour } from "./sheet.ts";
 
 const DEPTH_CHOICES: Array<{ depth: Depth; label: string; hint: string }> = [
   { depth: "ankle", label: "Ankle deep", hint: "Passable on foot" },
@@ -45,6 +47,7 @@ export class ReportFlow {
   private readonly root: HTMLElement;
   private readonly body: HTMLElement;
   private readonly closeButton: HTMLButtonElement;
+  private readonly behaviour: SheetBehaviour;
   private origin: ReportOrigin | null = null;
   private submitting = false;
 
@@ -58,10 +61,12 @@ export class ReportFlow {
     this.body = root.querySelector<HTMLElement>(".sheet__body")!;
     this.closeButton = root.querySelector<HTMLButtonElement>(".sheet__close")!;
     this.closeButton.addEventListener("click", () => this.close());
+    this.behaviour = attachSheetBehaviour(root, () => this.close());
   }
 
   close(): void {
     this.root.hidden = true;
+    this.behaviour.closed();
   }
 
   /** Opens the sheet and starts locating. Both happen at once, not in turn. */
@@ -69,6 +74,7 @@ export class ReportFlow {
     this.origin = null;
     this.submitting = false;
     this.renderChooser("Finding your location…");
+    this.behaviour.opened();
     this.root.hidden = false;
     this.closeButton.focus();
     void this.locate();
@@ -182,15 +188,69 @@ export class ReportFlow {
 
     this.renderPending();
 
+    // Stamped before the request goes out, so a report that ends up queued
+    // records when the water was seen rather than when it eventually sent.
+    const observedAt = new Date().toISOString();
+
     try {
-      const result = await submitReport(this.origin.latitude, this.origin.longitude, depth);
+      const result = await submitReport(
+        this.origin.latitude,
+        this.origin.longitude,
+        depth,
+        observedAt,
+      );
       this.renderAccepted(result);
       this.onAccepted(result);
     } catch (error) {
+      // Only an unreachable service is worth holding for. Anything the server
+      // answered -- outside coverage, a malformed depth -- it will answer the
+      // same way in ten minutes, and queuing it would promise the user
+      // something that is never going to happen.
+      if (error instanceof ApiError && error.status === 0) {
+        const held = enqueue({
+          latitude: this.origin.latitude,
+          longitude: this.origin.longitude,
+          depth,
+          observedAt,
+        });
+        if (held) {
+          this.renderQueued();
+          return;
+        }
+      }
       this.renderFailure(error);
     } finally {
       this.submitting = false;
     }
+  }
+
+  /**
+   * The report is kept, and the user is told exactly that.
+   *
+   * Deliberately not dressed up as success: nothing is on the map yet, and
+   * somebody who believes their warning is live when it is sitting in
+   * localStorage has been misled about the one thing they came here to do.
+   */
+  private renderQueued(): void {
+    const heading = document.createElement("h2");
+    heading.className = "sheet__title";
+    heading.textContent = "Saved — not sent yet";
+
+    const message = document.createElement("p");
+    message.className = "sheet__message";
+    message.textContent =
+      "You are offline, so your report is saved on this phone and will send by itself " +
+      `when the connection comes back. If that takes more than ${MAX_QUEUE_AGE_MINUTES} ` +
+      "minutes it will be discarded, because by then it no longer describes the water.";
+
+    const done = document.createElement("button");
+    done.type = "button";
+    done.className = "button button--primary";
+    done.textContent = "Done";
+    done.addEventListener("click", () => this.close());
+
+    this.body.replaceChildren(heading, message, done);
+    done.focus();
   }
 
   private renderPending(): void {

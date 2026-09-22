@@ -2,7 +2,7 @@ import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { CalculateRoutesCommand, GeoRoutesClient } from "@aws-sdk/client-geo-routes";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 
-import { documents, requireTable } from "../lib/dynamo.ts";
+import { queryAll, requireTable } from "../lib/dynamo.ts";
 import { boundingBox, boxesOnPath, type Position } from "../lib/geometry.ts";
 import { bounds, type Bounds } from "../lib/geohash.ts";
 import { json, problem } from "../lib/http.ts";
@@ -133,8 +133,8 @@ async function loadCorridor(corridor: Bounds): Promise<Hazard[] | null> {
   const riskTable = requireTable("RISK_CELLS_TABLE");
   const reportsTable = requireTable("REPORTS_TABLE");
 
-  const query = (table: string, prefix: string) =>
-    documents.send(
+  const query = <T>(table: string, prefix: string) =>
+    queryAll<T>(
       new QueryCommand({
         TableName: table,
         KeyConditionExpression: "cellPrefix = :prefix",
@@ -143,8 +143,8 @@ async function loadCorridor(corridor: Bounds): Promise<Hazard[] | null> {
     );
 
   const [cellResults, reportResults] = await Promise.all([
-    Promise.all(prefixes.map((prefix) => query(riskTable, prefix))),
-    Promise.all(prefixes.map((prefix) => query(reportsTable, prefix))),
+    Promise.all(prefixes.map((prefix) => query<RiskCellItem>(riskTable, prefix))),
+    Promise.all(prefixes.map((prefix) => query<ReportItem>(reportsTable, prefix))),
   ]);
 
   const nowSeconds = Math.floor(Date.now() / 1000);
@@ -152,11 +152,11 @@ async function loadCorridor(corridor: Bounds): Promise<Hazard[] | null> {
   // TTL deletes within 48 hours of expiry rather than at the instant of it, so
   // a lapsed report can still be sitting in the table. It must not close a road.
   const reports = reportResults
-    .flatMap((result) => (result.Items ?? []) as ReportItem[])
+    .flat()
     .filter((item) => !(typeof item.expiresAt === "number" && item.expiresAt <= nowSeconds));
 
   const cells = cellResults
-    .flatMap((result) => (result.Items ?? []) as RiskCellItem[])
+    .flat()
     .filter((item) => typeof item.cell === "string" && item.cell.length > 0)
     .map((item) => ({ cell: item.cell, bounds: bounds(item.cell), level: item.level }));
 

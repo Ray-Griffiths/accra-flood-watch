@@ -24,6 +24,7 @@ import {
   type TravelMode,
 } from "./api.ts";
 import { isInsideCoverage, type Coverage } from "./pilot.ts";
+import { attachSheetBehaviour, type SheetBehaviour } from "./sheet.ts";
 
 export type RouteState = "idle" | "picking" | "calculating" | "shown";
 
@@ -47,6 +48,7 @@ export class RouteFlow {
   private readonly root: HTMLElement;
   private readonly body: HTMLElement;
   private readonly closeButton: HTMLButtonElement;
+  private readonly behaviour: SheetBehaviour;
 
   private state: RouteState = "idle";
   private mode: TravelMode = "walking";
@@ -62,6 +64,7 @@ export class RouteFlow {
     this.body = root.querySelector<HTMLElement>(".sheet__body")!;
     this.closeButton = root.querySelector<HTMLButtonElement>(".sheet__close")!;
     this.closeButton.addEventListener("click", () => this.cancel());
+    this.behaviour = attachSheetBehaviour(root, () => this.cancel());
   }
 
   get currentState(): RouteState {
@@ -75,6 +78,7 @@ export class RouteFlow {
   start(): void {
     this.setState("picking");
     this.root.hidden = true;
+    this.behaviour.closed();
     this.callbacks.onRoute(null, this.callbacks.mapCentre(), this.callbacks.mapCentre());
     void this.locate();
   }
@@ -82,6 +86,7 @@ export class RouteFlow {
   cancel(): void {
     this.setState("idle");
     this.root.hidden = true;
+    this.behaviour.closed();
     this.callbacks.onRoute(null, this.callbacks.mapCentre(), this.callbacks.mapCentre());
   }
 
@@ -136,6 +141,7 @@ export class RouteFlow {
     const origin = this.origin ?? this.callbacks.mapCentre();
     this.setState("calculating");
     this.renderPending();
+    this.behaviour.opened();
     this.root.hidden = false;
 
     try {

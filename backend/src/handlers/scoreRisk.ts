@@ -2,7 +2,7 @@ import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { BatchWriteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
 import { dispatchAlerts } from "../lib/dispatch.ts";
-import { documents, requireTable } from "../lib/dynamo.ts";
+import { documents, queryAll, requireTable } from "../lib/dynamo.ts";
 import { fetchForecasts, nearestForecast, type ForecastPoint } from "../lib/forecast.ts";
 import { bounds, neighbours } from "../lib/geohash.ts";
 import { emitMetrics } from "../lib/metrics.ts";
@@ -48,6 +48,38 @@ interface RiskCellItem {
   historicalFloodPoint?: string;
   score?: number;
   level?: string;
+  basis?: string;
+  explanation?: string;
+  rainfall6h?: number | null;
+  rainfall24h?: number | null;
+  reportScore?: number;
+}
+
+/**
+ * The fields that constitute this cell's answer.
+ *
+ * Everything a reader of the map sees, and nothing else. `updatedAt` is not
+ * here on purpose -- see the call site.
+ */
+const ANSWER_FIELDS = [
+  "score",
+  "level",
+  "basis",
+  "explanation",
+  "rainfall6h",
+  "rainfall24h",
+  "reportScore",
+] as const;
+
+function hasChanged(
+  next: Record<string, unknown>,
+  before: RiskCellItem | undefined,
+): boolean {
+  // A cell the job has never scored must always be written.
+  if (!before) return true;
+
+  const was = before as unknown as Record<string, unknown>;
+  return ANSWER_FIELDS.some((field) => (next[field] ?? null) !== (was[field] ?? null));
 }
 
 interface ReportItem {
@@ -116,7 +148,7 @@ async function loadTuning(): Promise<TuningParameters> {
 async function loadAllCells(table: string, prefixes: string[]): Promise<RiskCellItem[]> {
   const results = await Promise.all(
     prefixes.map((prefix) =>
-      documents.send(
+      queryAll<RiskCellItem>(
         new QueryCommand({
           TableName: table,
           KeyConditionExpression: "cellPrefix = :prefix",
@@ -125,7 +157,7 @@ async function loadAllCells(table: string, prefixes: string[]): Promise<RiskCell
       ),
     ),
   );
-  return results.flatMap((result) => (result.Items ?? []) as RiskCellItem[]);
+  return results.flat();
 }
 
 /**
@@ -142,7 +174,7 @@ async function loadReportsByCell(
 ): Promise<Map<string, ReportItem[]>> {
   const results = await Promise.all(
     prefixes.map((prefix) =>
-      documents.send(
+      queryAll<ReportItem>(
         new QueryCommand({
           TableName: table,
           KeyConditionExpression: "cellPrefix = :prefix",
@@ -155,7 +187,7 @@ async function loadReportsByCell(
   const nowSeconds = Math.floor(now.getTime() / 1000);
   const byCell = new Map<string, ReportItem[]>();
 
-  for (const item of results.flatMap((r) => (r.Items ?? []) as ReportItem[])) {
+  for (const item of results.flat()) {
     if (typeof item.expiresAt === "number" && item.expiresAt <= nowSeconds) continue;
     const existing = byCell.get(item.cell);
     if (existing) existing.push(item);
@@ -241,6 +273,9 @@ export const handler = async (): Promise<{
   const forecastAvailable = forecastPoints.length > 0;
   const updatedAt = now.toISOString();
 
+  // What each cell said before this run, for the changed-only write below.
+  const previous = new Map<string, RiskCellItem>(cells.map((cell) => [cell.cell, cell]));
+
   let confirmedCells = 0;
   const raised: RaisedCell[] = [];
   const levelCounts: Record<string, number> = { low: 0, watch: 0, high: 0, confirmed: 0 };
@@ -296,7 +331,22 @@ export const handler = async (): Promise<{
     } as Record<string, unknown>;
   });
 
-  const written = await writeInBatches(riskTable, items);
+  // Only the cells whose answer actually moved.
+  //
+  // The job rescores all ~5,100 cells every hour, but on a dry day almost none
+  // of them change: the terrain is constant, the forecast rounds to the same
+  // numbers, and nobody has reported anything. Writing them all back was
+  // roughly 3.5 million writes a month against a pilot budget of $10-20, to
+  // store values identical to the ones already there.
+  //
+  // `updatedAt` is deliberately excluded from the comparison. Including it
+  // would make every item differ from its predecessor by construction and
+  // defeat the whole check -- and a cell whose risk has not changed has not
+  // been updated in any sense a reader cares about. `lastScoringRun` in the
+  // meta row is what proves the job ran.
+  const changed = items.filter((item) => hasChanged(item, previous.get(String(item["cell"]))));
+  const written = await writeInBatches(riskTable, changed);
+  const unchanged = items.length - changed.length;
 
   // The health endpoint reads this. A "#meta" partition can never collide with
   // a geohash prefix, so it stays invisible to every viewport query.
@@ -322,7 +372,13 @@ export const handler = async (): Promise<{
     : { sent: 0, pruned: 0, failed: 0, capped: false };
 
   emitMetrics({
+    // Proof the run happened, independent of whether it had anything to write.
+    // The stalled alarm watches THIS: now that unchanged cells are skipped, a
+    // quiet dry day legitimately writes zero cells, and an alarm on the write
+    // count would page somebody because nothing was wrong.
+    ScoringRuns: 1,
     CellsScored: written,
+    CellsUnchanged: unchanged,
     ForecastAvailable: forecastAvailable ? 1 : 0,
     ForecastPoints: forecastPoints.length,
     CellsHigh: levelCounts["high"] ?? 0,
@@ -336,7 +392,8 @@ export const handler = async (): Promise<{
   });
 
   console.log(
-    "Scored " + written + "/" + cells.length + " cells in " + (Date.now() - startedAt) + "ms. " +
+    "Scored " + cells.length + " cells in " + (Date.now() - startedAt) + "ms, " +
+      "wrote " + written + " changed, skipped " + unchanged + " unchanged. " +
       "Forecast " + (forecastAvailable ? "available" : "UNAVAILABLE") + ". " +
       "Levels: " + JSON.stringify(levelCounts) + ". Raised to high: " + raised.length + ". " +
       "Alerts sent " + dispatched.sent + ", failed " + dispatched.failed +

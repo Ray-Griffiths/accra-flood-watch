@@ -1436,3 +1436,148 @@ Also note `deploy-web.ps1` sets `$ErrorActionPreference = "Stop"`, so invoking
 it with `2>&1` under Windows PowerShell 5.1 wraps vite's stderr as a
 NativeCommandError and aborts a build that actually succeeded. Run it without
 the redirect.
+
+## Second review pass: items 7-19
+
+The remainder of the review list. Two decisions were the builder's and were
+taken explicitly: CloudFront moves to PriceClass_200, and budgets stay outside
+the template.
+
+### Watch alerts now cover the neighbourhood, not one cell
+
+A watch was registered against the single 152m cell the user tapped. Water does
+not respect that boundary, so somebody who saved their home and then watched
+the next cell along go under got nothing — a failure they could only read as
+the feature not working.
+
+`dispatchAlerts` now gathers watchers from the raised cell **and its eight
+neighbours**. Two things stop that being expensive or annoying:
+
+- Watchers for every raised cell are loaded in **one deduplicated pass**.
+  Raised cells in a storm are contiguous, so their neighbourhoods overlap
+  almost entirely; querying per cell would have multiplied reads by nine at
+  exactly the busiest moment.
+- **One alert per subscription per run.** A block of adjacent cells raising at
+  once is not nine times the information — it is how somebody turns
+  notifications off.
+
+`notifyCell`, the immediate confirmed-flooding path, shares `dispatchAlerts`
+and inherits both.
+
+### Reports survive having no signal
+
+The one write path in the application, used in the conditions that break mobile
+data. A report submitted with no connection was previously lost.
+
+`web/src/queue.ts` holds it in localStorage and sends it on `online` or at next
+launch. What makes the queue safe rather than merely convenient:
+
+- **Every entry carries when the water was SEEN.** `submitReport` accepts an
+  `observedAt` and writes it as the report's timestamp. Without that, a report
+  held ten minutes and then delivered would be written as current — turning
+  stale observations into fresh ones, which is precisely backwards for this
+  application, and could confirm a cell that has since drained.
+- **The window is 30 minutes, enforced on both sides.** It covers walking out
+  of a dead spot, not a backlog. The client drops an expired entry rather than
+  sending it to be refused; the server refuses one anyway, and refuses a
+  future-dated one, tolerating two minutes of clock skew.
+- **TTL runs from observation**, so a queued report still vanishes 24 hours
+  after the water was seen.
+- The sheet says "Saved — not sent yet", never dressed up as success. Somebody
+  who believes their warning is live when it is in localStorage has been misled
+  about the one thing they came here to do.
+
+`resolveObservedAt` was extracted to `lib/observed.ts` mid-way: the first
+version of its test restated the rule instead of importing it, which is a test
+of itself. It now runs against the real function.
+
+### The map no longer waits an hour to agree with the alert
+
+`getReports` returns `confirmedCells` — cells with two corroborating reports
+inside three hours. The client raises those cells to `confirmed` on the spot.
+
+The rule stays on the server on purpose. It is the project's own definition of
+confirmed flooding and must have exactly one implementation; duplicating the
+constants in the browser would let them drift, and the drift would surface as a
+map disagreeing with itself. The client only ever **upgrades** a cell — the
+hourly job remains authoritative in every other direction.
+
+### Cost: the hourly job stops rewriting cells that did not change
+
+The scoring run rescored and rewrote all ~5,100 cells every hour. On a dry day
+almost none of them move: constant terrain, a forecast that rounds the same, no
+reports. That was roughly 3.5M writes a month, against a $10-20 pilot budget,
+to store values identical to the ones already there.
+
+It now writes only cells whose answer changed. `updatedAt` is excluded from the
+comparison — including it would make every item differ by construction and
+defeat the check.
+
+**That broke the stalled alarm, and the fix is the interesting part.**
+`ScoringStalledAlarm` fired on `CellsScored < 1` for three hours. With
+changed-only writes a quiet dry day legitimately writes zero cells, so three
+calm hours would have paged for a system that was working perfectly. The alarm
+now watches a new `ScoringRuns` metric — emitted once per successful run,
+independent of whether there was anything to write. Liveness and throughput are
+different questions and were being answered by one number.
+
+### CloudFront moves to PriceClass_200
+
+PriceClass_100 has **no African edge locations** — every tile for a user in
+Accra came from Europe, ~5,000km away. PriceClass_200 adds Lagos, ~400km down
+the coast. African transfer is dearer per GB (~$0.11 vs ~$0.085) which at pilot
+volume is cents a month, and first paint on a mid-range Android phone on
+Ghanaian mobile data is the thing these users actually experience.
+
+### Robustness
+
+- **Request timeout.** `fetch` has no default one, so a stalled mobile
+  connection left the UI on "Loading flood risk…" forever — and the cached-risk
+  fallback, which exists for exactly that case, was never reached because the
+  promise never settled. Eight seconds, matching the forecast client.
+- **Query pagination.** `queryAll` follows `LastEvaluatedKey` at all five query
+  sites. A bare `send` past the 1MB page does not fail, it silently returns
+  part of a partition — a viewport missing cells renders as low risk, and a
+  corridor missing reports is a road presented as clear. Unreachable at 32
+  cells per partition today; reachable precisely when a flood makes a reports
+  partition grow.
+- **Polling.** The map only refreshed on a pan or tab return, so somebody
+  watching a storm develop saw one reading for an hour. Five minutes while
+  visible, stopped when hidden.
+
+### Accessibility
+
+`web/src/sheet.ts` now owns Escape, focus trapping and focus restoration for
+all three sheets. Previously only the detail sheet closed on Escape, and the
+two marked `aria-modal="true"` — the ones that actually trap the user — did
+not, and neither held focus. The trap is applied only to the modal sheets; the
+detail sheet is non-modal on purpose. Escape is also now scoped to the sheet
+that is open, where the old document-level listener fired for all of them.
+
+### CI
+
+`.github/workflows/ci.yml`: typecheck, tests and `cfn-lint` on every push and
+PR. 272 tests existed with nothing running them. Deliberately credential-free —
+`cfn-lint` rather than `sam validate --lint`, which resolves credentials it does
+not need — so a merge can never trigger a deploy. There is no staging
+environment, and the ship gate says the public URL must not break.
+
+### Budgets: nothing to do, and the earlier note was wrong
+
+The review said the $10 alert was missing. It is not. `AFW-Monthly` is a $25
+budget with notifications at **40% ($10)**, **100% ($25)** and a forecasted
+100%, all subscribed to the builder's email. The earlier claim was inferred
+from the budget limit without reading its notifications — checking first would
+have cost one API call. CLAUDE.md's requirement is already met and budgets stay
+console-managed.
+
+### Verification
+
+- backend: typecheck clean, **211 tests pass** (was 204)
+- web: typecheck clean, **61 tests pass** (was 52), `npm run build` succeeds
+- `sam validate --lint`: valid
+
+Not deployed. This batch changes the CloudFront price class, four alarms, the
+write pattern of the hourly job and the reports API contract, so it wants one
+`sam deploy`, then the web sync, then a live check of `/api/reports` for
+`confirmedCells` and a scoring run showing the changed-only write counts.

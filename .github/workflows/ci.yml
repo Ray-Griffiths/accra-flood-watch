@@ -1,0 +1,87 @@
+# Typecheck, test and validate the template on every change.
+#
+# The repository had 256 tests and nothing that ran them, so a regression was
+# only ever caught by somebody remembering to run `npm test` locally. This is
+# also the cheapest piece of judging evidence in the project: a green check on
+# a pull request is a reviewable, dated claim that the agent-authored diff
+# builds and passes, which a screenshot is not.
+#
+# Deliberately credential-free. Nothing here talks to AWS -- `sam validate`
+# without `--lint` needs no account, and deploys stay a deliberate local act
+# rather than something a merge can trigger. There is no staging environment
+# to catch a bad automatic deploy, and the ship gate says the public URL must
+# never break.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push supersedes the run in flight for the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Must match the Lambda runtime in template.yaml. Type stripping in
+          # the test runner is version-sensitive, so this is not incidental.
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+      # `build` runs tsc --noEmit before vite, so this covers the typecheck and
+      # proves the bundle the deploy script would upload actually compiles.
+      - run: npm run build
+
+  template:
+    name: SAM template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install cfn-lint
+
+      # cfn-lint rather than `sam validate --lint`, which resolves credentials
+      # even when it does not need them. Same underlying ruleset, no AWS
+      # account required.
+      - run: cfn-lint template.yaml

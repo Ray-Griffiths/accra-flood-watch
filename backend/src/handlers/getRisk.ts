@@ -1,7 +1,7 @@
 ﻿import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 
-import { documents, requireTable } from "../lib/dynamo.ts";
+import { queryAll, requireTable } from "../lib/dynamo.ts";
 import { json, problem } from "../lib/http.ts";
 import { bounds } from "../lib/geohash.ts";
 import { describeCoverage, parseBbox, prefixesForViewport } from "../lib/pilot.ts";
@@ -67,7 +67,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   const results = await Promise.all(
     prefixes.map((prefix) =>
-      documents.send(
+      queryAll<RiskCellItem>(
         new QueryCommand({
           TableName: table,
           KeyConditionExpression: "cellPrefix = :prefix",
@@ -86,7 +86,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   let anyRainfallKnown = false;
 
   const cells = results
-    .flatMap((result) => (result.Items ?? []) as RiskCellItem[])
+    .flat()
     .filter((item) => {
       // A prefix straddles the viewport edge, so drop cells that fall outside.
       const cellBounds = bounds(item.cell);
