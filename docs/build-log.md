@@ -898,3 +898,72 @@ wrote, rather than left for the next hour to fix.
   2 alarms now wired to an SNS topic.
 - New shared modules: `lib/vapid.ts`, `lib/metrics.ts` — extracted rather than
   duplicated once a second caller needed them.
+
+---
+
+## Day 6, continued — Four console errors, three explanations
+
+Reported from a real phone: a WebGL warning, repeated `400`s from `/api/route`,
+repeated `422`s from `/api/reports`, and a view toggle that appeared dead.
+
+### The 400s and the 422s were the same bug
+
+Both endpoints were refusing correctly. `/api/route` said *"The starting point
+is outside the Circle, Kaneshie and Avenor pilot area"* and `/api/reports` said
+the equivalent — because the device's GPS fix genuinely was outside it. The
+pilot box is about 5.5km × 4.4km. Standing a few streets beyond it is the
+normal case, not an edge case.
+
+The bug is that **the browser already knew the boundary and never consulted
+it.** `/api/config` returns `pilotArea.bbox`, and `main.ts` uses it to bound
+the map — but `reporting.ts` and `route-flow.ts` each took
+`position.coords` and sent it, then surfaced the rejection as a console error.
+The app had every piece of information needed to explain the situation and
+chose to let the server refuse instead.
+
+Fixed by checking before sending, in both flows:
+
+- `web/src/pilot.ts` — `isInsidePilotArea(bbox, lon, lat)`, pure and tested,
+  including the transposed-arguments case, because longitude and latitude are
+  both plausible small numbers and swapping them silently yields "outside".
+- Reporting gained a third origin source, `outside-area`, distinct from
+  `map-centre`. They need different sentences: one means *we could not find
+  you*, the other means *we found you and you are not somewhere this map
+  covers*. Collapsing them would be a small lie.
+- Routing simply declines to adopt an out-of-area fix, leaving the map centre —
+  which is inside the area by construction.
+
+Neither flow dead-ends. Somebody outside the area can still report a junction
+they can see on screen, which is a legitimate report; they are just told which
+position is about to be sent.
+
+### The toggle was working exactly as specified
+
+`view.ts` rule 1: a `confirmed` cell anywhere in the viewport forces the live
+view and overrides a manual choice, because somebody standing in water
+outranks a preference expressed earlier. That is a documented safety rule with
+tests in both directions.
+
+It was firing because a leftover test report had `ebzzdvz` sitting at
+`confirmed`, so `rainOutlook: none` could not take the map to terrain. Nothing
+to fix in the code. The test data is gone and the grid is back to 0 confirmed
+cells, 59 watch, 1,081 low, so the toggle moves again.
+
+Worth noting what this near-miss says, though: the override is correct, but a
+user who has not read `view.ts` experiences it as a broken control. The banner
+does say why — `overrodeChoice` is plumbed through for exactly this — so the
+remaining question is whether that sentence is prominent enough to be read
+before the toggle is pressed a second time. Not changed today; recorded.
+
+### The WebGL warning is not ours
+
+*"READ-usage buffer was written, then fenced, but written again before being
+read back."* That is MapLibre's tile rendering talking to the GPU driver, on a
+performance channel, in a build we pin at v5 for reasons recorded on Day 3. No
+functional effect and no action.
+
+### Counts
+
+- 19 frontend tests (up from 13), 173 backend, 0 failures.
+- New: `web/src/pilot.ts`, `web/src/pilot.test.ts`.
+- Reports: 0 items. Watchers: 0 items. Grid: 0 confirmed.

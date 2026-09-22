@@ -10,9 +10,15 @@
  * the point the map is centred on rather than dead-ending. Refusing to accept
  * a report because a permission prompt was dismissed would lose exactly the
  * reports that matter most.
+ *
+ * A device fix from outside the pilot area is treated the same way as no fix
+ * at all. It is a real position and the phone is not wrong — the area simply
+ * is not covered yet, and sending it would earn a 422 and a console error in
+ * place of an explanation.
  */
 
 import { ApiError, submitReport, type Depth, type SubmitResult } from "./api.ts";
+import { isInsidePilotArea, type Bbox } from "./pilot.ts";
 
 const DEPTH_CHOICES: Array<{ depth: Depth; label: string; hint: string }> = [
   { depth: "ankle", label: "Ankle deep", hint: "Passable on foot" },
@@ -24,8 +30,14 @@ const DEPTH_CHOICES: Array<{ depth: Depth; label: string; hint: string }> = [
 export interface ReportOrigin {
   latitude: number;
   longitude: number;
-  /** How the position was obtained, so the sheet can say so honestly. */
-  source: "device" | "map-centre";
+  /**
+   * How the position was obtained, so the sheet can say so honestly.
+   *
+   * `outside-area` is distinct from `map-centre` because the two need
+   * different sentences: one means we could not find you, the other means we
+   * found you and you are not somewhere this map covers.
+   */
+  source: "device" | "map-centre" | "outside-area";
   accuracyMetres?: number;
 }
 
@@ -40,6 +52,7 @@ export class ReportFlow {
     root: HTMLElement,
     private readonly mapCentre: () => [number, number],
     private readonly onAccepted: (result: SubmitResult) => void,
+    private readonly pilotBbox: Bbox,
   ) {
     this.root = root;
     this.body = root.querySelector<HTMLElement>(".sheet__body")!;
@@ -83,12 +96,15 @@ export class ReportFlow {
           maximumAge: 30_000,
         });
       });
-      this.origin = {
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-        source: "device",
-        accuracyMetres: position.coords.accuracy,
-      };
+      const { latitude, longitude, accuracy } = position.coords;
+
+      // A good fix from outside the covered area is not usable. Falling back
+      // to the map centre keeps the report possible — somebody reporting a
+      // junction they can see on screen is still a valid report — but the
+      // sheet has to say which position it is about to send.
+      this.origin = isInsidePilotArea(this.pilotBbox, longitude, latitude)
+        ? { latitude, longitude, source: "device", accuracyMetres: accuracy }
+        : { ...fallback, source: "outside-area" };
     } catch {
       this.origin = fallback;
     }
@@ -112,6 +128,11 @@ export class ReportFlow {
       where.textContent = accuracy
         ? `Using your location, accurate to about ${Math.round(accuracy)} m.`
         : "Using your location.";
+    } else if (this.origin?.source === "outside-area") {
+      where.textContent =
+        "You are outside the area this map covers (Circle, Kaneshie and Avenor). " +
+        "This will be reported at the centre of the map — move the map to the place you mean first.";
+      where.classList.add("sheet__where--fallback");
     } else {
       where.textContent =
         "Could not get your location, so this will be reported at the centre of the map. Move the map first if that is wrong.";

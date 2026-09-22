@@ -378,6 +378,7 @@ async function start(): Promise<void> {
       // than waiting for the next pan.
       void refreshForViewport();
     },
+    pilotBbox,
   );
 
   elements.reportButton.addEventListener("click", () => reportFlow.open());
@@ -401,7 +402,7 @@ async function start(): Promise<void> {
       handles?.frameRoute(drawn);
     },
     onState: renderRouteState,
-  });
+  }, pilotBbox);
 
   elements.routeButton.addEventListener("click", () => {
     if (routeFlow.currentState === "picking") routeFlow.cancel();
