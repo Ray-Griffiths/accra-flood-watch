@@ -1181,3 +1181,83 @@ cache was built for `(-0.260, 5.535, -0.180, 5.605)` and the catchment needs
 - 5 points applied, 3 carried as candidates. Previously 8 applied, 0 checked.
 - **Not re-run end to end**: `rasterio` is not installed in this shell, so
   `build_susceptibility.py` has not been executed against the corrections.
+
+---
+
+## Deployed: the Odaw catchment is live
+
+Deployed 2026-09-22, in the order the compatibility shims were built for.
+
+Preprocessing ran **first**, before anything touched AWS. If the grid could not
+be regenerated there was no point deploying a backend that claims ground it
+has no cells for, and this way a failure costs nothing.
+
+### The run
+
+`rasterio` was not installed locally; installing it was the only prerequisite.
+Then both caches did exactly what they were changed to do two hours earlier:
+
+```
+elevation: cached window does not match the covered area
+           (None != [-0.265, 5.52, -0.155, 5.665]); re-reading
+drainage:  cached window does not match the covered area; re-querying
+```
+
+The old DEM cache predated the bbox stamp entirely, so it reported `None` and
+was correctly treated as stale. Overpass returned 2,249 drainage features, up
+from 1,104 over the pilot window.
+
+| | Before | After |
+|---|---|---|
+| Grid cells | 1,140 | **5,100** |
+| Drainage features | 1,104 | 2,249 |
+| Median susceptibility | 61.1 | **40.4** |
+| Flood points applied | 8 (0 checked) | **5 (all checked)** |
+
+The median dropping from 61 to 40 is the catchment doing its job: the pilot box
+was all low-lying Odaw floodplain, and the new area reaches up to the Achimota
+high ground that drains into it. A model that scored those equally would be
+broken.
+
+### Sequence
+
+1. `build_susceptibility.py` — 5,100 cells, 5 points applied, 3 named as
+   skipped. Artefact validated against the flood-point contract before deploy.
+2. `sam deploy` — stack updated, `/api/config` serving `coverage` with the
+   `pilotArea` compatibility field alongside it.
+3. `seed_risk_cells.py` — 5,100 cells written.
+4. `scoreRisk` invoked directly rather than waiting for the top of the hour.
+   Seeding writes whole items, so it clears the score the hourly job owns;
+   every cell would otherwise have read terrain-only until 17:00Z. Scored
+   5,100, forecast available, 0 alerts.
+5. `deploy-web.ps1` — S3 sync plus CloudFront invalidation.
+
+### Verified live
+
+- Ship gate: site 200, health 200, 5,100 cells scored, forecast available.
+- Deployed bundle hash matches the local build exactly.
+- Achimota — outside the pilot box until today — returns 132 scored cells on
+  `terrain-and-forecast`, not truncated.
+- Both corrected flood points resolve at their new cells: Kwame Nkrumah Circle
+  at `ebzzejg`, Avenor at `ebzzep2`. The detail text reads "flooding has been
+  recorded at Kwame Nkrumah Circle" off the corrected coordinate.
+- **A 10.5km route across the whole catchment, Korle Lagoon to Achimota,
+  returns a real distance and duration.** That corridor needs 176 partitions;
+  before today it would have been verified over 128 of them and presented with
+  full confidence. This was the point of the change.
+- Tema and a destination outside coverage are both refused, naming the covered
+  area from the configuration rather than a hardcoded string.
+- 0 confirmed cells across all four quadrants; nothing truncated.
+
+### Test data
+
+One report was submitted at Achimota to exercise the write path over newly
+covered ground, then deleted, and the cell verified back at `low`/2.6.
+
+Two reports that are **not** test data were found in the table and left alone:
+`ebzzdvz` (waist, 13:50Z, coordinates 5.57/-0.22 — the old map centre, so
+possibly a map-centre report) and `ebzzdsx` (ankle, 16:20Z, 5.562391/-0.231453
+— a precise fix, so probably a real device). Neither confirms a cell on its
+own and neither forces the view override. Community reports are the one
+irreplaceable asset here; deleting something merely because its provenance is
+unclear is the wrong default.
