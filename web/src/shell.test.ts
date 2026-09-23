@@ -25,6 +25,7 @@ const CLASSES = [
   "search__input", "search__clear", "search__results", "language",
   "view-bar", "view-toggle__option", "route-prompt__text",
   "report-button__label", "sheet__body", "sheet__close", "disclaimer",
+  "rail__cap",
 ];
 
 describe("shell DOM contract", () => {
@@ -83,12 +84,13 @@ describe("shell DOM contract", () => {
   });
 
   it("keeps rail__cap a sibling of #legend, not a child", () => {
+    // Existence is asserted via CLASSES above. This is the structural half:
+    // renderLegend calls replaceChildren on #legend, so a cap nested inside it
+    // would be wiped on the first risk response rather than merely misplaced.
     const legendStart = HTML.indexOf('id="legend"');
     assert.notEqual(legendStart, -1, "missing #legend");
     const legendEnd = HTML.indexOf("</section>", legendStart);
     assert.notEqual(legendEnd, -1, "#legend is not a closed <section>");
-    // renderLegend calls replaceChildren on #legend, so anything nested inside
-    // it is wiped on the first risk response.
     assert.ok(
       !HTML.slice(legendStart, legendEnd).includes("rail__cap"),
       "rail__cap must be a sibling of #legend -- replaceChildren would wipe it",
@@ -96,10 +98,26 @@ describe("shell DOM contract", () => {
     const rail = HTML.indexOf('class="rail"');
     assert.notEqual(rail, -1, "missing the .rail wrapper");
     assert.ok(rail < legendStart, "#legend must sit inside .rail");
+    assert.ok(
+      HTML.indexOf("rail__cap", rail) > legendStart,
+      "rail__cap must live inside .rail, after #legend",
+    );
   });
 
   it("keeps the disclaimer pointing at NADMO and GMet", () => {
-    assert.match(HTML, /NADMO/, "the safety disclaimer must name NADMO");
-    assert.match(HTML, /Meteorological/, "the safety disclaimer must name GMet");
+    // Scoped to the element, not the file: matching anywhere would still pass
+    // if this text survived only in a comment. It is a safety requirement.
+    const start = HTML.indexOf('class="ov ov-legal disclaimer"');
+    assert.notEqual(start, -1, "missing the .disclaimer element");
+    const end = HTML.indexOf("</footer>", start);
+    assert.notEqual(end, -1, "the disclaimer is not a closed <footer>");
+    const scope = HTML.slice(start, end);
+    assert.match(scope, /NADMO/, "the disclaimer must name NADMO");
+    assert.match(scope, /Meteorological/, "the disclaimer must name GMet");
+    assert.match(
+      scope,
+      /not an official warning service/i,
+      "the disclaimer must say this is not an official warning service",
+    );
   });
 });
