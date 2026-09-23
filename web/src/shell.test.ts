@@ -13,6 +13,22 @@ import { describe, it } from "node:test";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
+/**
+ * The markup between an opening anchor and its closing tag.
+ *
+ * Every structural check here needs BOTH bounds. Four assertions in this file
+ * have shipped with a start and no end, each passing happily on markup that had
+ * moved elsewhere -- so the bound is taken once, here, rather than remembered
+ * correctly at each call site.
+ */
+function scopeOf(openAnchor: string, closeTag: string): string {
+  const start = HTML.indexOf(openAnchor);
+  assert.notEqual(start, -1, `index.html no longer contains ${openAnchor}`);
+  const end = HTML.indexOf(closeTag, start);
+  assert.notEqual(end, -1, `${openAnchor} is not closed by ${closeTag}`);
+  return HTML.slice(start, end);
+}
+
 /** ids reached for by id. */
 const IDS = [
   "status", "tagline", "map", "legend", "search", "search-input", "search-results",
@@ -60,11 +76,9 @@ describe("shell DOM contract", () => {
   });
 
   it("keeps .report-button__label inside #report-button", () => {
-    const start = HTML.indexOf('id="report-button"');
-    assert.notEqual(start, -1, "missing #report-button");
-    const end = HTML.indexOf("</button>", start);
+    const scope = scopeOf('id="report-button"', "</button>");
     assert.ok(
-      HTML.slice(start, end).includes("report-button__label"),
+      scope.includes("report-button__label"),
       "main.ts selects '#report-button .report-button__label'; it must be a descendant",
     );
   });
@@ -84,34 +98,27 @@ describe("shell DOM contract", () => {
   });
 
   it("keeps rail__cap a sibling of #legend, not a child", () => {
-    // Existence is asserted via CLASSES above. This is the structural half:
     // renderLegend calls replaceChildren on #legend, so a cap nested inside it
     // would be wiped on the first risk response rather than merely misplaced.
-    const legendStart = HTML.indexOf('id="legend"');
-    assert.notEqual(legendStart, -1, "missing #legend");
-    const legendEnd = HTML.indexOf("</section>", legendStart);
-    assert.notEqual(legendEnd, -1, "#legend is not a closed <section>");
+    const legend = scopeOf('id="legend"', "</section>");
     assert.ok(
-      !HTML.slice(legendStart, legendEnd).includes("rail__cap"),
+      !legend.includes("rail__cap"),
       "rail__cap must be a sibling of #legend -- replaceChildren would wipe it",
     );
-    const rail = HTML.indexOf('class="rail"');
-    assert.notEqual(rail, -1, "missing the .rail wrapper");
-    assert.ok(rail < legendStart, "#legend must sit inside .rail");
+
+    const rail = scopeOf('class="rail"', "</div>");
+    assert.ok(rail.includes('id="legend"'), "#legend must sit inside .rail");
+    assert.ok(rail.includes("rail__cap"), "rail__cap must sit inside .rail");
     assert.ok(
-      HTML.indexOf("rail__cap", rail) > legendStart,
-      "rail__cap must live inside .rail, after #legend",
+      rail.indexOf("rail__cap") > rail.indexOf('id="legend"'),
+      "rail__cap must come after #legend inside .rail",
     );
   });
 
   it("keeps the disclaimer pointing at NADMO and GMet", () => {
     // Scoped to the element, not the file: matching anywhere would still pass
     // if this text survived only in a comment. It is a safety requirement.
-    const start = HTML.indexOf('class="ov ov-legal disclaimer"');
-    assert.notEqual(start, -1, "missing the .disclaimer element");
-    const end = HTML.indexOf("</footer>", start);
-    assert.notEqual(end, -1, "the disclaimer is not a closed <footer>");
-    const scope = HTML.slice(start, end);
+    const scope = scopeOf('class="ov ov-legal disclaimer"', "</footer>");
     assert.match(scope, /NADMO/, "the disclaimer must name NADMO");
     assert.match(scope, /Meteorological/, "the disclaimer must name GMet");
     assert.match(
