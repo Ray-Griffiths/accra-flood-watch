@@ -233,11 +233,6 @@ body {
 
 /* ------------------------------------------------------------------ search */
 
-/* Absolutely positioned inside .stage, which is already `position: relative`.
-   Out of the document flow ON PURPOSE: the layout fits a 390x844 phone with
-   roughly 17px spare in the worst case, and a search bar in the flow would
-   spend all of it and push the page into scrolling. This costs zero vertical
-   budget. */
 /* Anchored top-left and capped, at every width.
  *
  * A search box belongs in the corner of a map: centred, it would sit over
@@ -428,6 +423,52 @@ body {
 .search__caveat {
   border-top: 1px solid var(--line);
   margin-top: 0.3rem;
+}
+
+/* Share sits above the watch control: passing a warning on is the more
+   immediate act, and the more common one. */
+.sheet__share {
+  width: 100%;
+  margin-bottom: 0.5rem;
+}
+
+/* ---------------------------------------------------------------- language */
+
+/* Bottom-left of the map, clear of the scale bar beneath it. Out of the
+   document flow for the same reason the search is: there is no vertical
+   budget left, and this is a once-ever action. */
+.language {
+  position: absolute;
+  left: 0.6rem;
+  bottom: 2.6rem;
+  z-index: 5;
+}
+
+.language__select {
+  min-height: 36px;
+  padding: 0 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgb(16 36 46 / 22%);
+}
+
+/* Somebody reading an unreviewed translation of a flood warning is entitled
+   to know that is what they are reading. */
+.language__notice {
+  margin: 0.4rem 0 0;
+  max-width: 16rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  box-shadow: 0 2px 8px rgb(16 36 46 / 22%);
 }
 
 /* ------------------------------------------------------------------ legend */
@@ -873,6 +914,33 @@ body {
 .sheet__where--fallback {
   color: var(--warn);
   font-weight: 600;
+}
+
+/* Set apart from the four depths above, because it is a different kind of
+   claim: the depths describe water somebody can see, this says there is
+   nothing left to describe. Neutral rather than a fifth colour in the danger
+   ramp -- it is not a severity, and it takes three people agreeing before the
+   map acts on it where two suffice to mark a street flooded. */
+.depth-choice--cleared {
+  width: 100%;
+  margin-top: 0.6rem;
+  border: 1px solid var(--ok);
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.depth-choice--cleared .depth-choice__hint {
+  color: var(--ok);
+  opacity: 0.85;
+}
+
+.sheet__history {
+  margin: 0.6rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border-left: 3px solid var(--brand);
+  background: var(--paper);
+  font-size: 0.88rem;
+  color: var(--ink-soft);
 }
 
 .sheet__privacy {

@@ -5,6 +5,7 @@ import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
 import { documents, queryAll, requireTable } from "../lib/dynamo.ts";
+import { markerFor } from "../lib/history.ts";
 import { resolveObservedAt } from "../lib/observed.ts";
 import { json, problem } from "../lib/http.ts";
 import { cellFor, describeCoverage, isInsideCoverage, prefixFor } from "../lib/pilot.ts";
@@ -14,7 +15,10 @@ import {
   CONFIRMING_DEPTHS,
   DEPTH_LABELS,
   type DepthLevel,
+  type ReportCondition,
+  isClearedByReports,
   isDepthLevel,
+  isReportCondition,
   strongestDepth,
 } from "../lib/risk.ts";
 
@@ -25,6 +29,7 @@ const lambda = new LambdaClient({});
 interface ExistingReport {
   reportId: string;
   cell: string;
+  condition?: ReportCondition;
   depth: DepthLevel;
   submittedAt: string;
   expiresAt: number;
@@ -52,7 +57,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   const { depth, latitude, longitude } = payload as Record<string, unknown>;
 
-  if (!isDepthLevel(depth)) {
+  // Absent means a water report, which is every row written before clearing
+  // existed and every report from a browser running an older bundle.
+  const rawCondition = (payload as Record<string, unknown>)["condition"] ?? "flooded";
+  if (!isReportCondition(rawCondition)) {
+    return problem(400, "condition must be flooded or cleared");
+  }
+  const condition = rawCondition;
+
+  // A depth is what a flooding report IS. A clearing report has no depth to
+  // give -- the whole claim is that there is nothing to measure.
+  if (condition === "flooded" && !isDepthLevel(depth)) {
     return problem(400, "depth must be ankle, knee, waist or impassable");
   }
   if (typeof latitude !== "number" || !Number.isFinite(latitude)) {
@@ -102,7 +117,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         cellPrefix,
         reportId,
         cell,
-        depth,
+        condition,
+        // Only meaningful for a flooding report. Omitted entirely on a clear
+        // rather than stored as a placeholder depth nobody observed.
+        ...(condition === "flooded" ? { depth: depth as DepthLevel } : {}),
         // Coordinates, a severity and a timestamp. Nothing else. Nothing links
         // two reports from the same device.
         latitude: Math.round(latitude * 1e6) / 1e6,
@@ -112,6 +130,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       },
     }),
   );
+
+  // An anonymous "this cell flooded on this date" marker. Only for reports OF
+  // water: a clearing report is the absence of an observation and must not
+  // add to a record of how often a place floods.
+  if (condition === "flooded") {
+    await recordHistory(cell, observed);
+  }
 
   // Recompute the live component immediately so a confirmed flooding state
   // does not wait for the next hourly run.
@@ -126,15 +151,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   return json(201, {
     accepted: true,
     cell,
-    depth,
-    depthLabel: DEPTH_LABELS[depth],
+    condition,
+    ...(condition === "flooded"
+      ? { depth: depth as DepthLevel, depthLabel: DEPTH_LABELS[depth as DepthLevel] }
+      : {}),
     submittedAt,
     expiresAt: new Date(expiresAt * 1000).toISOString(),
     ...confirmation,
-    message:
-      confirmation.level === "confirmed"
-        ? "Thank you. Enough people have reported water here that the map now shows confirmed flooding."
-        : "Thank you. Your report is on the map. It will disappear automatically in 24 hours.",
+    message: messageFor(condition, confirmation.level),
   });
 };
 
@@ -146,7 +170,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
  * there is water, whatever the forecast believes.
  */
 interface Confirmation {
-  level: "reported" | "confirmed";
+  level: "reported" | "confirmed" | "cleared";
   recentReports: number;
   /** Deepest water among the qualifying reports; absent when there are none. */
   strongestDepth?: DepthLevel;
@@ -171,10 +195,18 @@ async function evaluateConfirmation(
   );
 
   const nowSeconds = Math.floor(now.getTime() / 1000);
-  const qualifying = recent.filter(
+  const live = recent.filter((item) => item.cell === cell && item.expiresAt > nowSeconds);
+
+  // Residents have withdrawn the evidence of water. That is not a claim the
+  // cell is safe -- it only means reports stop counting, and the terrain and
+  // forecast decide on their own again.
+  if (isClearedByReports(live, now)) {
+    return { level: "cleared", recentReports: 0 };
+  }
+
+  const qualifying = live.filter(
     (item) =>
-      item.cell === cell &&
-      item.expiresAt > nowSeconds &&
+      (item.condition ?? "flooded") === "flooded" &&
       (CONFIRMING_DEPTHS as readonly string[]).includes(item.depth),
   );
 
@@ -186,6 +218,47 @@ async function evaluateConfirmation(
     recentReports: qualifying.length,
     ...(deepest ? { strongestDepth: deepest } : {}),
   };
+}
+
+/**
+ * Note that this cell flooded today, and carry on regardless of the outcome.
+ *
+ * Never allowed to fail the submission. The report itself is the thing the
+ * user came to file; the tally is a by-product, and losing a day marker is
+ * not worth telling somebody standing in water that their report failed.
+ *
+ * Writing the same cell and date twice simply overwrites, which is what keeps
+ * this a record of days rather than a count of how vocal a street is.
+ */
+async function recordHistory(cell: string, when: Date): Promise<void> {
+  const table = process.env["FLOOD_HISTORY_TABLE"];
+  if (!table) return;
+
+  try {
+    await documents.send(new PutCommand({ TableName: table, Item: markerFor(cell, when) }));
+  } catch (error) {
+    console.error(`Could not record flood history for ${cell}`, error);
+  }
+}
+
+/**
+ * What to say back.
+ *
+ * A clearing report that has not yet reached consensus must not imply the
+ * road has been reopened on the map -- it says the report was recorded and
+ * what still has to happen. Overstating it here is how somebody walks back
+ * into water on the strength of their own single observation.
+ */
+function messageFor(condition: ReportCondition, level: Confirmation["level"]): string {
+  if (condition === "cleared") {
+    return level === "cleared"
+      ? "Thank you. Enough people agree the water has gone, so the map no longer shows flooding here."
+      : "Thank you. Your report is recorded. A few people need to agree before the map stops showing flooding here.";
+  }
+
+  return level === "confirmed"
+    ? "Thank you. Enough people have reported water here that the map now shows confirmed flooding."
+    : "Thank you. Your report is on the map. It will disappear automatically in 24 hours.";
 }
 
 /**

@@ -57,6 +57,91 @@ export function strongestDepth(
   return strongest;
 }
 
+// ---------------------------------------------------------------------------
+// "The water has gone"
+// ---------------------------------------------------------------------------
+
+/**
+ * What a report asserts. Absent on rows written before clearing existed, and
+ * those are all observations of water, so the default is `flooded`.
+ */
+export type ReportCondition = "flooded" | "cleared";
+
+export function isReportCondition(value: unknown): value is ReportCondition {
+  return value === "flooded" || value === "cleared";
+}
+
+/**
+ * Clearing is deliberately harder than confirming, and the asymmetry is the
+ * whole safety argument.
+ *
+ * Two people saying "there is water here" marks a cell confirmed. It takes
+ * THREE saying it has gone, inside a much shorter window, to lift that. The
+ * reason is that the two errors are not comparable: a false alarm sends
+ * somebody the long way round, and a false all-clear sends them into water.
+ *
+ * The window is short because "it has gone" decays fast in a way "there is
+ * water" does not. Standing water an hour old is still probably there; an
+ * hour-old report that a road had drained tells you very little about now.
+ */
+export const CLEARING_REPORT_COUNT = 3;
+export const CLEARING_WINDOW_MINUTES = 60;
+
+export interface ConditionedReport {
+  condition?: ReportCondition;
+  submittedAt: string;
+}
+
+function conditionOf(report: ConditionedReport): ReportCondition {
+  return report.condition ?? "flooded";
+}
+
+function ageMinutesOf(report: ConditionedReport, now: Date): number {
+  const then = Date.parse(report.submittedAt);
+  return Number.isNaN(then) ? Number.POSITIVE_INFINITY : (now.getTime() - then) / 60_000;
+}
+
+/**
+ * Have residents cleared this cell?
+ *
+ * Requires enough recent agreement AND that nobody has reported water since
+ * that agreement began. The second clause is what makes this safe: if water
+ * comes back, the newest flooding report is newer than the clears, the clear
+ * is stale, and the cell floods again without waiting for anything to expire.
+ *
+ * Note what a `true` here does NOT mean. It does not assert that the cell is
+ * safe. It only means the community's evidence of water has been withdrawn,
+ * so the cell falls back to what the terrain and the forecast say on their
+ * own. Clearing can never push a cell below that floor, because it never adds
+ * anything -- it only stops reports counting.
+ */
+export function isClearedByReports(
+  reports: readonly ConditionedReport[],
+  now: Date,
+): boolean {
+  const recentClears = reports
+    .filter(
+      (report) =>
+        conditionOf(report) === "cleared" &&
+        ageMinutesOf(report, now) >= 0 &&
+        ageMinutesOf(report, now) <= CLEARING_WINDOW_MINUTES,
+    )
+    .sort((a, b) => Date.parse(a.submittedAt) - Date.parse(b.submittedAt));
+
+  if (recentClears.length < CLEARING_REPORT_COUNT) return false;
+
+  // The moment the agreement started. Anything reporting water after this
+  // overrides it.
+  const clearedFrom = Date.parse(recentClears[0]!.submittedAt);
+
+  const waterSince = reports.some(
+    (report) =>
+      conditionOf(report) === "flooded" && Date.parse(report.submittedAt) > clearedFrom,
+  );
+
+  return !waterSince;
+}
+
 export const DEPTH_LABELS: Record<DepthLevel, string> = {
   ankle: "ankle deep",
   knee: "knee deep",

@@ -32,6 +32,10 @@ interface RiskCellItem {
   // feed was down on that run, which is not the same as zero rain.
   rainfall6h?: number | null;
   rainfall24h?: number | null;
+  // The same cell scored against the rest of the day rather than the next six
+  // hours. Null when the feed was down on that run.
+  scoreLater?: number | null;
+  levelLater?: string | null;
 }
 
 /**
@@ -133,6 +137,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         // between showing weather and showing ground without a second request
         // -- which matters on a connection where the second request is the one
         // that does not arrive.
+        // Null rather than defaulted: a missing later-today reading must read
+        // as "no forecast", never as a calm evening.
+        scoreLater: item.scoreLater ?? null,
+        levelLater: item.levelLater ?? null,
         terrainBand: terrainBand(item.susceptibility),
         terrainExplanation: describeTerrain(
           item.susceptibility,

@@ -146,6 +146,24 @@ and is cited throughout the app as where to go for official warnings. It is
 **not** a data source for this system — there is no GMet integration, and the
 only forecast feed called is Open-Meteo.
 
+## Open data
+
+The terrain layer is published for anyone to use, because which streets go
+under first is civic information and it is more useful to NADMO and to
+researchers as a file they can open than as pixels inside a phone.
+
+| file | use |
+| --- | --- |
+| [`/open-data/terrain.geojson`](https://d227oixun34mjp.cloudfront.net/open-data/terrain.geojson) | Opens directly in QGIS, ArcGIS, R or GeoPandas. One polygon per cell. |
+| [`/open-data/terrain.json`](https://d227oixun34mjp.cloudfront.net/open-data/terrain.json) | The grid keyed by geohash. Smaller, and the natural shape for joining to other cell data. |
+| [`/open-data/README.md`](https://d227oixun34mjp.cloudfront.net/open-data/README.md) | Field meanings, method and caveats. |
+
+5,100 cells at ~152m, licensed **CC-BY-4.0**. Regenerate with
+`python preprocessing/export_open_data.py`.
+
+Only the **static terrain layer** is published. Community reports are not:
+they self-delete after 24 hours and publishing them would undo that promise.
+
 ## Licence
 
 MIT — see [`LICENSE`](LICENSE).

@@ -66,6 +66,12 @@ export interface RiskCell {
   hand: number;
   historicalFloodPoint?: string;
   updatedAt?: string;
+  /**
+   * The same cell scored against the rest of today rather than the next six
+   * hours. Null when the forecast feed was down — never read that as calm.
+   */
+  scoreLater?: number | null;
+  levelLater?: string | null;
   /** How this ground behaves in rain. A permanent property, not a warning. */
   terrainBand?: string;
   terrainExplanation?: string;
@@ -101,8 +107,12 @@ export interface RiskResponse {
   message?: string;
 }
 
+export type ReportCondition = "flooded" | "cleared";
+
 export interface FloodReport {
   cell: string;
+  /** Absent on rows written before clearing existed; those are all water. */
+  condition?: ReportCondition;
   depth: string;
   depthLabel: string;
   latitude: number;
@@ -133,11 +143,12 @@ export type Depth = "ankle" | "knee" | "waist" | "impassable";
 export interface SubmitResult {
   accepted: boolean;
   cell: string;
-  depth: Depth;
-  depthLabel: string;
+  condition?: ReportCondition;
+  depth?: Depth;
+  depthLabel?: string;
   submittedAt: string;
   expiresAt: string;
-  level: "reported" | "confirmed";
+  level: "reported" | "confirmed" | "cleared";
   recentReports: number;
   message: string;
 }
@@ -364,6 +375,11 @@ export interface PlaceResult {
   terrainBand?: string;
   terrainExplanation?: string;
   updatedAt?: string;
+  /**
+   * How often flooding has been reported here, as a sentence. Absent when
+   * nothing has been — never "0 days", which would read as an all-clear.
+   */
+  history?: string;
   /** Present when there is no risk reading to give, and says why. */
   message?: string;
 }
@@ -382,10 +398,14 @@ export function searchPlaces(query: string): Promise<SearchResponse> {
   return request<SearchResponse>(`/api/search?q=${encodeURIComponent(query)}`);
 }
 
+/**
+ * `depth` is null for a clearing report: the whole claim is that there is
+ * nothing left to measure.
+ */
 export function submitReport(
   latitude: number,
   longitude: number,
-  depth: Depth,
+  depth: Depth | null,
   observedAt?: string,
 ): Promise<SubmitResult> {
   return request<SubmitResult>("/api/reports", {
@@ -394,7 +414,8 @@ export function submitReport(
     body: JSON.stringify({
       latitude,
       longitude,
-      depth,
+      condition: depth === null ? "cleared" : "flooded",
+      ...(depth === null ? {} : { depth }),
       ...(observedAt ? { observedAt } : {}),
     }),
   });

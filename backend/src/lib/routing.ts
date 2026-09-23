@@ -15,7 +15,12 @@
 
 import type { Bounds } from "./geohash.ts";
 import { mergeBounds } from "./geometry.ts";
-import { CONFIRMING_DEPTHS, type DepthLevel } from "./risk.ts";
+import {
+  CONFIRMING_DEPTHS,
+  isClearedByReports,
+  type DepthLevel,
+  type ReportCondition,
+} from "./risk.ts";
 
 export type TravelMode = "walking" | "driving";
 
@@ -58,7 +63,14 @@ export interface HazardInputs {
   /** Cells in the corridor, as scored by the hourly job. */
   cells: ReadonlyArray<{ cell: string; bounds: Bounds; level?: string }>;
   /** Active reports, already filtered to unexpired. */
-  reports: ReadonlyArray<{ cell: string; depth: DepthLevel }>;
+  reports: ReadonlyArray<{
+    cell: string;
+    depth: DepthLevel;
+    condition?: ReportCondition;
+    submittedAt: string;
+  }>;
+  /** Needed to age the clearing window. */
+  now: Date;
 }
 
 /**
@@ -71,20 +83,47 @@ export interface HazardInputs {
  * not to send somebody else down that street.
  */
 export function classifyHazards(input: HazardInputs): Hazard[] {
-  const confirming = new Set<string>();
+  // Group first so clearing can be decided per cell. A cell residents have
+  // cleared stops being a hard block -- otherwise a road that drained hours
+  // ago keeps sending people the long way round, which is how a routing tool
+  // stops being used.
+  const byCell = new Map<string, HazardInputs["reports"][number][]>();
   for (const report of input.reports) {
-    if ((CONFIRMING_DEPTHS as readonly string[]).includes(report.depth)) {
-      confirming.add(report.cell);
+    const existing = byCell.get(report.cell);
+    if (existing) existing.push(report);
+    else byCell.set(report.cell, [report]);
+  }
+
+  const cleared = new Set<string>();
+  const confirming = new Set<string>();
+
+  for (const [cell, reports] of byCell) {
+    if (isClearedByReports(reports, input.now)) {
+      cleared.add(cell);
+      continue;
+    }
+    for (const report of reports) {
+      if (
+        (report.condition ?? "flooded") === "flooded" &&
+        (CONFIRMING_DEPTHS as readonly string[]).includes(report.depth)
+      ) {
+        confirming.add(cell);
+      }
     }
   }
 
   const hazards: Hazard[] = [];
   for (const cell of input.cells) {
-    if (cell.level === "confirmed") {
+    // `confirmed` is the scoring job's own override, and it can lag a clear
+    // by up to a quarter of an hour. Residents standing on dry ground now
+    // outrank a score computed before they said so.
+    if (cell.level === "confirmed" && !cleared.has(cell.cell)) {
       hazards.push({ cell: cell.cell, bounds: cell.bounds, reason: "confirmed" });
     } else if (confirming.has(cell.cell)) {
       hazards.push({ cell: cell.cell, bounds: cell.bounds, reason: "reported" });
-    } else if (cell.level === "high") {
+    } else if (cell.level === "high" && !cleared.has(cell.cell)) {
+      // `likely` is inference from terrain and forecast, so a clear softens it
+      // rather than being ignored -- but it was never a hard block anyway.
       hazards.push({ cell: cell.cell, bounds: cell.bounds, reason: "likely" });
     }
   }

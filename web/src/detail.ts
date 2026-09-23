@@ -34,6 +34,8 @@ export interface CellDetail {
   centre: [number, number];
   /** Reports standing in this cell right now, newest first. */
   reports: Array<{ depthLabel: string; ageLabel: string }>;
+  /** How often flooding has been reported here. Absent when never. */
+  history?: string;
 }
 
 /**
@@ -53,6 +55,12 @@ export class DetailSheet {
   constructor(
     root: HTMLElement,
     private readonly renderWatch?: WatchSectionRenderer,
+    /**
+     * Share this place. Injected for the same reason the watch control is:
+     * the Web Share API and its clipboard fallback are a platform dance that
+     * does not belong in a file about presenting a cell.
+     */
+    private readonly onShare?: (detail: CellDetail) => void,
   ) {
     this.root = root;
     this.body = root.querySelector<HTMLElement>(".sheet__body")!;
@@ -83,8 +91,9 @@ export class DetailSheet {
       // shown in both views. Somebody standing in water is worth knowing about
       // whichever question was being asked.
       ...(detail.reports.length > 0 ? [this.reports(detail)] : []),
+      ...compact([this.history(detail)]),
       this.provenance(detail),
-      ...compact([this.renderWatch?.(detail) ?? null]),
+      ...compact([this.shareButton(detail), this.renderWatch?.(detail) ?? null]),
     );
 
     this.behaviour.opened();
@@ -92,6 +101,43 @@ export class DetailSheet {
     // Focus moves to the close button so a keyboard or screen-reader user is
     // inside the sheet rather than still back on the map.
     this.closeButton.focus();
+  }
+
+
+  /**
+   * "Send this to someone."
+   *
+   * The single most useful thing a person can do with a flood warning is pass
+   * it on, and until this existed the app had no way to be passed on -- there
+   * was no URL that meant anything. Nothing renders if no handler was given,
+   * so the sheet degrades to what it was.
+   */
+  private shareButton(detail: CellDetail): HTMLElement | null {
+    if (!this.onShare) return null;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button button--secondary sheet__share";
+    button.textContent = "Share this place";
+    button.addEventListener("click", () => this.onShare?.(detail));
+    return button;
+  }
+
+
+  /**
+   * How often this place has flooded before.
+   *
+   * The one thing this project knows that nobody publishes. It sits below the
+   * live reading rather than beside it, because it answers a different
+   * question: not "is it flooded now" but "is this a place that floods".
+   */
+  private history(detail: CellDetail): HTMLElement | null {
+    if (!detail.history) return null;
+
+    const p = document.createElement("p");
+    p.className = "sheet__history";
+    p.textContent = detail.history;
+    return p;
   }
 
   private heading(label: string, colour: string, score: number, term: string): HTMLElement {

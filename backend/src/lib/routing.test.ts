@@ -26,6 +26,10 @@ import {
 
 const BOX: Bounds = { west: -0.22, south: 5.57, east: -0.218, north: 5.572 };
 
+/** Fixed clock so the clearing window in `classifyHazards` is deterministic. */
+const NOW = new Date("2026-09-23T12:00:00.000Z");
+const RECENT = new Date(NOW.getTime() - 10 * 60_000).toISOString();
+
 function cell(name: string, level?: string) {
   return { cell: name, bounds: BOX, level };
 }
@@ -59,7 +63,7 @@ describe("isHardBlock", () => {
 
 describe("classifyHazards", () => {
   it("hard-blocks a confirmed cell", () => {
-    const hazards = classifyHazards({ cells: [cell("ebzzdyp", "confirmed")], reports: [] });
+    const hazards = classifyHazards({ now: NOW, cells: [cell("ebzzdyp", "confirmed")], reports: [] });
     assert.deepEqual(hazards, [{ cell: "ebzzdyp", bounds: BOX, reason: "confirmed" }]);
   });
 
@@ -70,8 +74,9 @@ describe("classifyHazards", () => {
    */
   it("hard-blocks on a single knee-deep report without confirmation", () => {
     const hazards = classifyHazards({
+      now: NOW,
       cells: [cell("ebzzdyp", "low")],
-      reports: [{ cell: "ebzzdyp", depth: "knee" }],
+      reports: [{ cell: "ebzzdyp", depth: "knee", submittedAt: RECENT }],
     });
     assert.equal(hazards[0]?.reason, "reported");
   });
@@ -79,8 +84,9 @@ describe("classifyHazards", () => {
   it("hard-blocks on waist and impassable reports too", () => {
     for (const depth of ["waist", "impassable"] as const) {
       const hazards = classifyHazards({
+        now: NOW,
         cells: [cell("ebzzdyp", "low")],
-        reports: [{ cell: "ebzzdyp", depth }],
+        reports: [{ cell: "ebzzdyp", depth, submittedAt: RECENT }],
       });
       assert.equal(hazards[0]?.reason, "reported", `depth ${depth}`);
     }
@@ -93,20 +99,22 @@ describe("classifyHazards", () => {
    */
   it("does not block on an ankle-deep report", () => {
     const hazards = classifyHazards({
+      now: NOW,
       cells: [cell("ebzzdyp", "low")],
-      reports: [{ cell: "ebzzdyp", depth: "ankle" }],
+      reports: [{ cell: "ebzzdyp", depth: "ankle", submittedAt: RECENT }],
     });
     assert.deepEqual(hazards, []);
   });
 
   it("softly avoids a high cell", () => {
-    const hazards = classifyHazards({ cells: [cell("ebzzdyp", "high")], reports: [] });
+    const hazards = classifyHazards({ now: NOW, cells: [cell("ebzzdyp", "high")], reports: [] });
     assert.equal(hazards[0]?.reason, "likely");
     assert.equal(isHardBlock(hazards[0]!.reason), false);
   });
 
   it("ignores low and watch cells entirely", () => {
     const hazards = classifyHazards({
+      now: NOW,
       cells: [cell("a", "low"), cell("b", "watch"), cell("c", undefined)],
       reports: [],
     });
@@ -115,8 +123,9 @@ describe("classifyHazards", () => {
 
   it("prefers the strongest reason when a cell qualifies more than once", () => {
     const hazards = classifyHazards({
+      now: NOW,
       cells: [cell("ebzzdyp", "confirmed")],
-      reports: [{ cell: "ebzzdyp", depth: "impassable" }],
+      reports: [{ cell: "ebzzdyp", depth: "impassable", submittedAt: RECENT }],
     });
     assert.equal(hazards.length, 1);
     assert.equal(hazards[0]?.reason, "confirmed");
@@ -124,8 +133,9 @@ describe("classifyHazards", () => {
 
   it("does not block a cell because a different cell was reported", () => {
     const hazards = classifyHazards({
+      now: NOW,
       cells: [cell("ebzzdyp", "low")],
-      reports: [{ cell: "ebzzdyq", depth: "impassable" }],
+      reports: [{ cell: "ebzzdyq", depth: "impassable", submittedAt: RECENT }],
     });
     assert.deepEqual(hazards, []);
   });
@@ -370,5 +380,70 @@ describe("avoidanceAreas", () => {
     assert.equal(areas.length, 2);
     // Confirmed is emitted first, so the budget reaches it however tight.
     assert.deepEqual(areas[0], hazards[1]!.bounds);
+  });
+});
+
+/**
+ * A road that drained must reopen.
+ *
+ * This is the half of clearing that makes it worth having: without it, a
+ * confirmed cell keeps sending people the long way round for hours after the
+ * water has gone, and a routing tool that lies about closures stops being
+ * used. The opposite direction -- that a clear cannot reopen a road water has
+ * returned to -- is covered in clearing.test.ts.
+ */
+describe("a cleared cell", () => {
+  function clearedReports(cell: string) {
+    return [
+      { cell, depth: "knee" as const, submittedAt: new Date(NOW.getTime() - 90 * 60_000).toISOString() },
+      { cell, depth: "knee" as const, condition: "cleared" as const, submittedAt: new Date(NOW.getTime() - 20 * 60_000).toISOString() },
+      { cell, depth: "knee" as const, condition: "cleared" as const, submittedAt: new Date(NOW.getTime() - 15 * 60_000).toISOString() },
+      { cell, depth: "knee" as const, condition: "cleared" as const, submittedAt: new Date(NOW.getTime() - 10 * 60_000).toISOString() },
+    ];
+  }
+
+  it("stops being a hard block once residents clear it", () => {
+    const hazards = classifyHazards({
+      now: NOW,
+      cells: [cell("ebzzdyp", "low")],
+      reports: clearedReports("ebzzdyp"),
+    });
+    assert.deepEqual(hazards, [], "a drained road must reopen");
+  });
+
+  it("overrides a stale `confirmed` score", () => {
+    // The scoring job can lag a clear by up to a quarter of an hour. People
+    // standing on dry ground now outrank a number computed before they said so.
+    const hazards = classifyHazards({
+      now: NOW,
+      cells: [cell("ebzzdyp", "confirmed")],
+      reports: clearedReports("ebzzdyp"),
+    });
+    assert.deepEqual(hazards, []);
+  });
+
+  it("still blocks when water was reported after the clears", () => {
+    const hazards = classifyHazards({
+      now: NOW,
+      cells: [cell("ebzzdyp", "confirmed")],
+      reports: [
+        ...clearedReports("ebzzdyp"),
+        { cell: "ebzzdyp", depth: "waist" as const, submittedAt: new Date(NOW.getTime() - 2 * 60_000).toISOString() },
+      ],
+    });
+    assert.equal(hazards[0]?.reason, "confirmed", "water coming back must re-block");
+  });
+
+  it("does not clear a neighbouring cell nobody reported on", () => {
+    const hazards = classifyHazards({
+      now: NOW,
+      cells: [cell("ebzzdyp", "confirmed"), cell("ebzzdyq", "confirmed")],
+      reports: clearedReports("ebzzdyp"),
+    });
+    assert.deepEqual(
+      hazards.map((h) => h.cell),
+      ["ebzzdyq"],
+      "clearing one cell must not clear its neighbours",
+    );
   });
 });

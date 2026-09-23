@@ -58,7 +58,8 @@ aws s3 sync $dist "s3://$bucket" `
     --cache-control "public, max-age=31536000, immutable" `
     --exclude "index.html" `
     --exclude "service-worker.js" `
-    --exclude "manifest.webmanifest"
+    --exclude "manifest.webmanifest" `
+    --exclude "open-data/*"
 if ($LASTEXITCODE -ne 0) { throw "Asset upload failed." }
 
 # Pass 2: the entry point and service worker must never be cached, or users
@@ -82,10 +83,24 @@ aws s3 cp (Join-Path $dist "manifest.webmanifest") "s3://$bucket/manifest.webman
     --content-type "application/manifest+json"
 if ($LASTEXITCODE -ne 0) { throw "manifest upload failed." }
 
+# Open data is published under a stable, unhashed path so it can be cited and
+# linked. That means it must NOT get the year-long immutable caching the
+# hashed assets get, or a regenerated grid would be invisible for a year. A
+# day is long enough to keep it cheap and short enough to stay honest.
+Write-Host "Uploading open data..." -ForegroundColor Cyan
+$openData = Join-Path $dist "open-data"
+if (Test-Path $openData) {
+    aws s3 sync $openData "s3://$bucket/open-data" `
+        --region $Region `
+        --delete `
+        --cache-control "public, max-age=86400"
+    if ($LASTEXITCODE -ne 0) { throw "Open data upload failed." }
+}
+
 Write-Host "Invalidating CloudFront cache..." -ForegroundColor Cyan
 aws cloudfront create-invalidation `
     --distribution-id $distributionId `
-    --paths "/index.html" "/service-worker.js" "/manifest.webmanifest" `
+    --paths "/index.html" "/service-worker.js" "/manifest.webmanifest" "/open-data/*" `
     --query "Invalidation.Id" `
     --output text
 if ($LASTEXITCODE -ne 0) { throw "Invalidation failed." }

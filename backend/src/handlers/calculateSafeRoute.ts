@@ -7,7 +7,7 @@ import { boundingBox, boxesOnPath, type Position } from "../lib/geometry.ts";
 import { bounds, type Bounds } from "../lib/geohash.ts";
 import { json, problem } from "../lib/http.ts";
 import { describeCoverage, isInsideCoverage, prefixesForCorridor } from "../lib/pilot.ts";
-import type { DepthLevel } from "../lib/risk.ts";
+import type { DepthLevel, ReportCondition } from "../lib/risk.ts";
 import {
   avoidanceAreas,
   classifyHazards,
@@ -66,6 +66,8 @@ interface RiskCellItem {
 interface ReportItem {
   cell: string;
   depth: DepthLevel;
+  condition?: ReportCondition;
+  submittedAt: string;
   expiresAt?: number;
 }
 
@@ -160,7 +162,7 @@ async function loadCorridor(corridor: Bounds): Promise<Hazard[] | null> {
     .filter((item) => typeof item.cell === "string" && item.cell.length > 0)
     .map((item) => ({ cell: item.cell, bounds: bounds(item.cell), level: item.level }));
 
-  return classifyHazards({ cells, reports });
+  return classifyHazards({ cells, reports, now: new Date() });
 }
 
 interface CalculatedRoute {

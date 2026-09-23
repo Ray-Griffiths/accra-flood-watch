@@ -375,6 +375,40 @@ Resources:
         # asset this project has.
         PointInTimeRecoveryEnabled: true
 
+  # ----------------------------------------------------------------------------
+  # How often a place floods, as a count of DAYS and nothing else.
+  #
+  # This is the one thing this project knows that nobody publishes, and it is
+  # deliberately the weakest possible record of it. A row is a cell and a date.
+  # There are no coordinates, no times, no depths, no report ids, and nothing
+  # that could associate two submissions with each other or with a device.
+  #
+  # It is a separate table rather than a counter on RiskCells so the retention
+  # is separate too: reports still vanish at 24 hours exactly as promised, and
+  # what survives is an anonymous tally that could have been produced by
+  # counting rainfall.
+  # ----------------------------------------------------------------------------
+  FloodHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: cell
+          AttributeType: S
+        - AttributeName: day
+          AttributeType: S
+      KeySchema:
+        - AttributeName: cell
+          KeyType: HASH
+        - AttributeName: day
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        # Accumulated history is the one thing here that cannot be recreated.
+        PointInTimeRecoveryEnabled: true
+
   WatchersTable:
     Type: AWS::DynamoDB::Table
     # Push subscriptions are re-established by the browser on next visit.
@@ -613,12 +647,16 @@ Resources:
       Environment:
         Variables:
           RISK_CELLS_TABLE: !Ref RiskCellsTable
+          FLOOD_HISTORY_TABLE: !Ref FloodHistoryTable
       Policies:
         - Statement:
             # Read-only: search resolves a name to a cell and reads that cell.
             - Effect: Allow
               Action: dynamodb:GetItem
               Resource: !GetAtt RiskCellsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !GetAtt FloodHistoryTable.Arn
             - Effect: Allow
               Action: geo-places:SearchText
               Resource: !Sub "arn:${AWS::Partition}:geo-places:${AWS::Region}::provider/default"
@@ -671,6 +709,9 @@ Resources:
       Environment:
         Variables:
           REPORTS_TABLE: !Ref ReportsTable
+          # An anonymous day tally, written alongside the report. No
+          # coordinates, no time of day, nothing linking two submissions.
+          FLOOD_HISTORY_TABLE: !Ref FloodHistoryTable
           # Which function to ask for an alert when a report confirms a cell.
           # The name, not the table: this handler still cannot touch Watchers.
           NOTIFY_FUNCTION_NAME: !Ref NotifyCellFunction
@@ -690,6 +731,12 @@ Resources:
                 - dynamodb:PutItem
                 - dynamodb:Query
               Resource: !GetAtt ReportsTable.Arn
+            # Write-only on the history tally. A public write path has no
+            # business reading back how often a place floods, and certainly
+            # none deleting it.
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt FloodHistoryTable.Arn
         # The RiskCells read grant that used to sit here was dead: this handler
         # has never read that table. Removed rather than left "in case".
         - Statement:
@@ -1029,18 +1076,26 @@ Resources:
                 StringEquals:
                   kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
       Events:
-        Hourly:
+        Cadence:
           Type: ScheduleV2
           Properties:
-            # Top of every hour, per section 7.5 of the plan.
-            ScheduleExpression: cron(0 * * * ? *)
+            # Every fifteen minutes, but a full rescore only happens at the top
+            # of the hour or while it is raining -- the handler decides and
+            # exits in well under a second otherwise.
+            #
+            # Hourly was right for the dry season and too slow for the storm
+            # this application exists for: a cell can go from `watch` to people
+            # standing in water inside fifteen minutes, and the alert that
+            # matters would have waited up to an hour behind the schedule.
+            ScheduleExpression: cron(0/15 * * * ? *)
             ScheduleExpressionTimezone: UTC
-            Description: Hourly Accra Flood Watch risk recomputation.
+            Description: Accra Flood Watch risk recomputation, hourly or every 15min in rain.
             RetryPolicy:
-              # One hour until the next run; two quick retries cover a blip in
-              # the forecast feed without stacking invocations.
+              # Fifteen minutes until the next tick, so retries stay short
+              # enough not to overlap it. Two covers a blip in the forecast
+              # feed without stacking invocations.
               MaximumRetryAttempts: 2
-              MaximumEventAgeInSeconds: 600
+              MaximumEventAgeInSeconds: 300
     Metadata:
       BuildMethod: esbuild
       BuildProperties:

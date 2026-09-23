@@ -29,6 +29,19 @@ const DEPTH_CHOICES: Array<{ depth: Depth; label: string; hint: string }> = [
   { depth: "impassable", label: "Impassable", hint: "Nobody can get through" },
 ];
 
+/**
+ * "The water has gone" is set apart from the depths, visually and in the
+ * markup, because it is a different KIND of claim.
+ *
+ * The four above describe water somebody is looking at. This one says there
+ * is nothing to describe, and it takes three people agreeing before the map
+ * acts on it -- where two suffice to mark a street flooded. A false all-clear
+ * sends somebody into water, so it is deliberately not just a fifth button in
+ * the same row.
+ */
+const CLEARED_LABEL = "The water has gone";
+const CLEARED_HINT = "This road is passable again";
+
 export interface ReportOrigin {
   latitude: number;
   longitude: number;
@@ -151,12 +164,24 @@ export class ReportFlow {
       choices.append(this.depthButton(choice));
     }
 
+    const cleared = document.createElement("button");
+    cleared.type = "button";
+    cleared.className = "depth-choice depth-choice--cleared";
+    const clearedLabel = document.createElement("span");
+    clearedLabel.className = "depth-choice__label";
+    clearedLabel.textContent = CLEARED_LABEL;
+    const clearedHint = document.createElement("span");
+    clearedHint.className = "depth-choice__hint";
+    clearedHint.textContent = CLEARED_HINT;
+    cleared.append(clearedLabel, clearedHint);
+    cleared.addEventListener("click", () => void this.send(null));
+
     const privacy = document.createElement("p");
     privacy.className = "sheet__privacy";
     privacy.textContent =
       "No name, no account, no device id. Your report disappears automatically after 24 hours.";
 
-    this.body.replaceChildren(heading, where, choices, privacy);
+    this.body.replaceChildren(heading, where, choices, cleared, privacy);
   }
 
   private depthButton(choice: (typeof DEPTH_CHOICES)[number]): HTMLButtonElement {
@@ -177,7 +202,7 @@ export class ReportFlow {
     return button;
   }
 
-  private async send(depth: Depth): Promise<void> {
+  private async send(depth: Depth | null): Promise<void> {
     // The location request may still be in flight on a slow fix.
     if (!this.origin) {
       const centre = this.mapCentre();

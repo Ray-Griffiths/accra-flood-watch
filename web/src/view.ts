@@ -50,7 +50,7 @@ export function decideView(inputs: ViewInputs): ViewDecision {
   if (anyConfirmed) {
     return {
       view: "now",
-      overrodeChoice: manual === "terrain",
+      overrodeChoice: manual !== null && manual !== "now",
       reason: "People are reporting water in this area right now.",
     };
   }
@@ -60,7 +60,7 @@ export function decideView(inputs: ViewInputs): ViewDecision {
   if (outlook === "significant") {
     return {
       view: "now",
-      overrodeChoice: manual === "terrain",
+      overrodeChoice: manual !== null && manual !== "now",
       reason: "Rain heavy enough to flood is forecast. Showing risk right now.",
     };
   }
@@ -70,10 +70,7 @@ export function decideView(inputs: ViewInputs): ViewDecision {
     return {
       view: manual,
       overrodeChoice: false,
-      reason:
-        manual === "terrain"
-          ? "Showing which streets flood when it rains, not today's risk."
-          : "Showing flood risk right now.",
+      reason: manualReason(manual, outlook),
     };
   }
 
@@ -97,6 +94,26 @@ export function decideView(inputs: ViewInputs): ViewDecision {
         ? "Some rain forecast. Showing flood risk right now."
         : "Showing flood risk right now.",
   };
+}
+
+/**
+ * What the banner says when the user has chosen a view themselves.
+ *
+ * The `later` sentence has to carry a caveat the other two do not. It is a
+ * forecast, so it is the one view on this map that can be wrong about
+ * something that has not happened yet, and saying so is what stops somebody
+ * treating "clear later" as a promise.
+ */
+function manualReason(manual: MapView, outlook: RainOutlook | null | undefined): string {
+  if (manual === "terrain") {
+    return "Showing which streets flood when it rains, not today's risk.";
+  }
+  if (manual === "later") {
+    return outlook === null || outlook === undefined
+      ? "No rainfall forecast available, so there is nothing to show for later today."
+      : "Showing what the rest of today's rain could do. A forecast, not a warning.";
+  }
+  return "Showing flood risk right now.";
 }
 
 /** Whether anything in view is being reported as flooded at this moment. */

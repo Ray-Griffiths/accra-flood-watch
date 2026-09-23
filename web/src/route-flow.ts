@@ -24,11 +24,14 @@ import {
   type TravelMode,
 } from "./api.ts";
 import { isInsideCoverage, type Coverage } from "./pilot.ts";
+import { COMMUTE_LABELS, forgetCommute, loadCommute, saveCommute } from "./commute.ts";
 import { attachSheetBehaviour, type SheetBehaviour } from "./sheet.ts";
 
 export type RouteState = "idle" | "picking" | "calculating" | "shown";
 
 export interface RouteFlowCallbacks {
+  /** Fired when a trip is saved or forgotten, so the shell can update. */
+  onCommuteChanged?: () => void;
   /** Where the trip starts if the device will not say. */
   mapCentre: () => [number, number];
   /**
@@ -51,6 +54,9 @@ export class RouteFlow {
   private readonly behaviour: SheetBehaviour;
 
   private state: RouteState = "idle";
+  /** The journey just calculated, so it can be offered for saving. */
+  private lastJourney: { origin: [number, number]; destination: [number, number]; mode: TravelMode } | null =
+    null;
   private mode: TravelMode = "walking";
   private origin: [number, number] | null = null;
   private originFromDevice = false;
@@ -147,6 +153,7 @@ export class RouteFlow {
     try {
       const result = await calculateRoute(origin, destination, this.mode);
       this.setState("shown");
+      this.lastJourney = { origin, destination, mode: this.mode };
       this.render(result, origin, destination);
       this.callbacks.onRoute(result, origin, destination);
     } catch (error) {
@@ -283,8 +290,56 @@ export class RouteFlow {
       this.start();
     });
 
-    wrap.append(again, other);
+    wrap.append(again, other, this.commuteButton());
     return wrap;
+  }
+
+  /**
+   * Save this trip, or forget it.
+   *
+   * Offered only after a route has actually been worked out, so what gets
+   * saved is a journey the user has seen and accepted rather than a pair of
+   * taps that may have gone somewhere they did not mean.
+   */
+  private commuteButton(): HTMLElement {
+    const saved = loadCommute();
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button button--secondary";
+
+    if (saved) {
+      button.textContent = "Forget my saved trip";
+      button.addEventListener("click", () => {
+        forgetCommute();
+        button.replaceWith(this.commuteButton());
+      });
+      return button;
+    }
+
+    button.textContent = "Save this trip";
+    button.addEventListener("click", () => {
+      if (!this.lastJourney) return;
+      saveCommute({ ...this.lastJourney, label: COMMUTE_LABELS[0] });
+      button.replaceWith(this.commuteButton());
+      this.callbacks.onCommuteChanged?.();
+    });
+    return button;
+  }
+
+  /**
+   * Re-run the saved journey without picking anything.
+   *
+   * The whole point of the feature: the morning question is "can I get to
+   * work", and it should cost one tap rather than two map picks.
+   */
+  checkSavedCommute(): void {
+    const saved = loadCommute();
+    if (!saved) return;
+
+    this.mode = saved.mode;
+    this.origin = saved.origin;
+    this.originFromDevice = false;
+    void this.send(saved.destination);
   }
 
   private renderFailure(error: unknown, destination: [number, number]): void {

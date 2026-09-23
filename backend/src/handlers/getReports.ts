@@ -10,12 +10,15 @@ import {
   CONFIRMING_DEPTHS,
   DEPTH_LABELS,
   type DepthLevel,
+  type ReportCondition,
+  isClearedByReports,
 } from "../lib/risk.ts";
 
 interface ReportItem {
   cellPrefix: string;
   reportId: string;
   cell: string;
+  condition?: ReportCondition;
   depth: DepthLevel;
   latitude: number;
   longitude: number;
@@ -75,10 +78,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         0,
         Math.floor((Date.now() - Date.parse(item.submittedAt)) / 60_000),
       );
+      const condition = item.condition ?? "flooded";
       return {
         cell: item.cell,
+        condition,
         depth: item.depth,
-        depthLabel: DEPTH_LABELS[item.depth] ?? item.depth,
+        depthLabel:
+          condition === "cleared"
+            ? "water has gone"
+            : (DEPTH_LABELS[item.depth] ?? item.depth),
         latitude: item.latitude,
         longitude: item.longitude,
         // Every report carries its age so users can weigh it themselves.
@@ -113,24 +121,40 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
 /** Cells with enough recent corroboration to count as confirmed flooding. */
 function confirmedCells(
-  reports: ReadonlyArray<{ cell: string; depth: DepthLevel; submittedAt: string }>,
+  reports: ReadonlyArray<{
+    cell: string;
+    depth: DepthLevel;
+    condition?: ReportCondition;
+    submittedAt: string;
+  }>,
   now: number,
 ): string[] {
-  const counts = new Map<string, number>();
-
+  const byCell = new Map<string, (typeof reports)[number][]>();
   for (const report of reports) {
-    if (!(CONFIRMING_DEPTHS as readonly string[]).includes(report.depth)) continue;
-
-    const age = (now - Date.parse(report.submittedAt)) / 60_000;
-    if (!Number.isFinite(age) || age < 0 || age > CONFIRMATION_WINDOW_MINUTES) continue;
-
-    counts.set(report.cell, (counts.get(report.cell) ?? 0) + 1);
+    const existing = byCell.get(report.cell);
+    if (existing) existing.push(report);
+    else byCell.set(report.cell, [report]);
   }
 
-  return [...counts.entries()]
-    .filter(([, count]) => count >= CONFIRMATION_REPORT_COUNT)
-    .map(([cell]) => cell)
-    .sort();
+  const at = new Date(now);
+  const confirmed: string[] = [];
+
+  for (const [cell, cellReports] of byCell) {
+    // Residents have withdrawn the evidence. Never confirm over a clear.
+    if (isClearedByReports(cellReports, at)) continue;
+
+    const qualifying = cellReports.filter((report) => {
+      if ((report.condition ?? "flooded") !== "flooded") return false;
+      if (!(CONFIRMING_DEPTHS as readonly string[]).includes(report.depth)) return false;
+
+      const age = (now - Date.parse(report.submittedAt)) / 60_000;
+      return Number.isFinite(age) && age >= 0 && age <= CONFIRMATION_WINDOW_MINUTES;
+    });
+
+    if (qualifying.length >= CONFIRMATION_REPORT_COUNT) confirmed.push(cell);
+  }
+
+  return confirmed.sort();
 }
 
 function describeAge(minutes: number): string {

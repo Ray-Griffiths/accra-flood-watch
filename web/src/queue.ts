@@ -43,7 +43,8 @@ const MAX_ENTRIES = 20;
 export interface PendingReport {
   latitude: number;
   longitude: number;
-  depth: Depth;
+  /** Null for "the water has gone", which has no depth to report. */
+  depth: Depth | null;
   /** ISO 8601. When the water was seen, not when this was last sent. */
   observedAt: string;
 }

@@ -110,6 +110,10 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname.startsWith("/api/")) return;
   if (url.pathname.startsWith("/v2/")) return;
+  // Open data is a couple of megabytes published for download, not part of
+  // the app shell. Caching it here would spend a phone's storage on a file
+  // the app itself never reads.
+  if (url.pathname.startsWith("/open-data/")) return;
 
   // Navigations: network first so updates land promptly, shell as fallback.
   if (request.mode === "navigate") {

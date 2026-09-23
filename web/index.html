@@ -56,6 +56,14 @@
           <div id="search-results" class="search__results" role="region" aria-live="polite" hidden></div>
         </form>
 
+        <!-- Floats over the map, for the same reason the search does: the
+             layout has no vertical budget left, and a language control is a
+             rare one-time action that does not deserve a band of its own. -->
+        <div class="language">
+          <label class="search__label" for="language-select">Language</label>
+          <select id="language-select" class="language__select"></select>
+        </div>
+
         <div id="map" class="map" role="application" aria-label="Flood risk map of the pilot area">
           <noscript>
             <p class="noscript">
@@ -78,6 +86,14 @@
               aria-pressed="true"
             >
               Right now
+            </button>
+            <button
+              type="button"
+              class="view-toggle__option"
+              data-view="later"
+              aria-pressed="false"
+            >
+              Later today
             </button>
             <button
               type="button"

@@ -21,6 +21,8 @@
  * warning gets ignored on the day it matters.
  */
 
+import { t } from "./i18n.ts";
+
 export type RiskLevel = "low" | "watch" | "high" | "confirmed";
 
 export const RISK_LEVELS: readonly RiskLevel[] = ["low", "watch", "high", "confirmed"];
@@ -162,13 +164,48 @@ export function terrainStyle(band: string): LevelStyle {
 // ---------------------------------------------------------------------------
 
 /** Which reading the overlay is currently drawing. */
-export type MapView = "now" | "terrain";
+/**
+ * Which question the rectangles are answering.
+ *
+ *   now      Is this street dangerous right now?
+ *   later    Will it be, over the rest of today?
+ *   terrain  Which streets go under when it rains, regardless of today?
+ *
+ * `later` reuses the live vocabulary rather than inventing a third one. It is
+ * the same question as `now` asked about a different hour, and giving it its
+ * own colours would imply a different kind of claim.
+ */
+export type MapView = "now" | "later" | "terrain";
 
 /** Every style the overlay can paint, in the order the legend lists them. */
+/**
+ * Styles with their words resolved in the active language.
+ *
+ * Colour, pattern and outline are language-independent; only the label and
+ * the one-line meaning change. That split is deliberate — it means a
+ * translation gap can cost a word but can never cost the shape or colour
+ * channel that the map's readability actually depends on.
+ */
 export function stylesForView(view: MapView): ReadonlyArray<[string, LevelStyle]> {
   return view === "terrain"
-    ? TERRAIN_BANDS.map((band) => [band, TERRAIN_STYLES[band]] as [string, LevelStyle])
-    : RISK_LEVELS.map((level) => [level, LEVEL_STYLES[level]] as [string, LevelStyle]);
+    ? TERRAIN_BANDS.map(
+        (band) =>
+          [band, localise(TERRAIN_STYLES[band], `terrain.${band}`)] as [string, LevelStyle],
+      )
+    : RISK_LEVELS.map(
+        (level) =>
+          [level, localise(LEVEL_STYLES[level], `level.${level}`)] as [string, LevelStyle],
+      );
+}
+
+function localise(style: LevelStyle, key: string): LevelStyle {
+  const label = t(key);
+  const meaning = t(`${key}.meaning`);
+  return {
+    ...style,
+    label: label === key ? style.label : label,
+    meaning: meaning === `${key}.meaning` ? style.meaning : meaning,
+  };
 }
 
 /**
@@ -183,7 +220,7 @@ export function matchByView<T>(
   pick: (style: LevelStyle) => T,
   fallback: T,
 ): unknown[] {
-  const key = view === "terrain" ? "terrainBand" : "level";
+  const key = view === "terrain" ? "terrainBand" : view === "later" ? "levelLater" : "level";
   const expression: unknown[] = ["match", ["get", key]];
   for (const [value, style] of stylesForView(view)) {
     expression.push(value, pick(style));

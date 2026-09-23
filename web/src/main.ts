@@ -33,6 +33,17 @@ import { stylesForView, type MapView } from "./levels.ts";
 import { DEFAULT_ZOOM, RISK_LAYERS, createMap, installOverlays, type MapHandles } from "./map.ts";
 import { ReportFlow } from "./reporting.ts";
 import { PlaceSearch } from "./search.ts";
+import { loadCommute } from "./commute.ts";
+import {
+  LOCALES,
+  LOCALE_NAMES,
+  detectLocale,
+  isDraftLocale,
+  isLocale,
+  setLocale,
+  t,
+} from "./i18n.ts";
+import { clearIntent, readIntent, shareUrlFor } from "./url-state.ts";
 import { RouteFlow, type RouteState } from "./route-flow.ts";
 import { decideView, hasConfirmedCell } from "./view.ts";
 import {
@@ -47,6 +58,8 @@ import {
 const elements = {
   map: document.querySelector<HTMLElement>("#map")!,
   search: document.querySelector<HTMLElement>("#search")!,
+  language: document.querySelector<HTMLElement>(".language")!,
+  languageSelect: document.querySelector<HTMLSelectElement>("#language-select")!,
   tagline: document.querySelector<HTMLElement>("#tagline")!,
   status: document.querySelector<HTMLElement>("#status")!,
   legend: document.querySelector<HTMLElement>("#legend")!,
@@ -452,6 +465,156 @@ function renderWatchSection(
   return section;
 }
 
+/**
+ * Hand a link to this place to whatever the phone uses for sharing.
+ *
+ * `navigator.share` is the native sheet -- WhatsApp, SMS, anything installed
+ * -- and is what somebody in Accra will actually reach for. It is not
+ * everywhere, and it rejects when the user simply dismisses the sheet, which
+ * is not an error and must not be reported as one. The clipboard is the
+ * fallback, and saying "link copied" is the only way the user knows anything
+ * happened.
+ */
+async function sharePlace(centre: readonly [number, number]): Promise<void> {
+  const url = shareUrlFor(centre, window.location.href);
+  const text = "Flood risk at this place on Accra Flood Watch";
+
+  if (typeof navigator.share === "function") {
+    try {
+      await navigator.share({ title: "Accra Flood Watch", text, url });
+      return;
+    } catch {
+      // Dismissed, or the platform refused. Fall through to the clipboard
+      // rather than telling the user something went wrong.
+    }
+  }
+
+  try {
+    await navigator.clipboard.writeText(url);
+    setStatus("Link copied. Paste it to send this place to someone.", "ok");
+  } catch {
+    setStatus("Could not share automatically. Copy the address bar instead.", "warn");
+  }
+}
+
+/**
+ * Act on whatever the address bar asked for, once.
+ *
+ * Applied after the first risk response so a shared place can be matched to a
+ * real cell; the pin and the flight happen regardless, because a link to
+ * ground the grid has not loaded yet should still take you there.
+ */
+function applyIntent(
+  intent: ReturnType<typeof readIntent>,
+  handles: MapHandles,
+  detailSheet: DetailSheet,
+  openReport: () => void,
+  startRoute: () => void,
+): void {
+  if (intent.at) {
+    const [lon, lat] = intent.at;
+    handles.setSearchPin({ longitude: lon, latitude: lat, title: "Shared place" });
+
+    const match = currentCells.find(
+      (cell) =>
+        lon >= cell.bounds.west &&
+        lon <= cell.bounds.east &&
+        lat >= cell.bounds.south &&
+        lat <= cell.bounds.north,
+    );
+    if (match) openDetailFor(match.cell, detailSheet);
+  }
+
+  if (intent.action === "report") openReport();
+  if (intent.action === "route") startRoute();
+
+  // Consume it. A shortcut left in the URL would re-open the report flow on
+  // every resume, and a shared link would re-open the sheet on every reload.
+  clearIntent();
+}
+
+/**
+ * Build the language picker and apply the chosen language.
+ *
+ * Re-rendering the legend and relabelling the controls is enough: the map
+ * itself repaints from the same style objects, and the per-cell explanation
+ * sentences are composed on the server and stay English until a native
+ * speaker has reviewed them. That boundary is stated to the user rather than
+ * hidden — see the draft notice below.
+ */
+function installLanguagePicker(onChange: () => void): void {
+  const select = elements.languageSelect;
+
+  for (const locale of LOCALES) {
+    const option = document.createElement("option");
+    option.value = locale;
+    option.textContent = LOCALE_NAMES[locale];
+    select.append(option);
+  }
+
+  const apply = (): void => {
+    select.value = getActiveLocale();
+    paintDraftNotice();
+    applyStaticText();
+    onChange();
+  };
+
+  select.addEventListener("change", () => {
+    const chosen = select.value;
+    if (!isLocale(chosen)) return;
+    setLocale(chosen);
+    apply();
+  });
+
+  setLocale(detectLocale());
+  apply();
+}
+
+function getActiveLocale(): string {
+  return document.documentElement.lang || "en";
+}
+
+/**
+ * Say plainly when the wording on screen has not been checked.
+ *
+ * A draft translation of a flood warning is still worth having -- it is how
+ * somebody navigates the app at all -- but presenting it as finished would be
+ * claiming a confidence nobody on the project can back.
+ */
+function paintDraftNotice(): void {
+  const existing = elements.language.querySelector(".language__notice");
+  existing?.remove();
+
+  if (!isDraftLocale()) return;
+
+  const notice = document.createElement("p");
+  notice.className = "language__notice";
+  notice.setAttribute("role", "note");
+  notice.textContent = t("language.draft");
+  elements.language.append(notice);
+}
+
+/** Relabel the chrome that is not rebuilt on every render. */
+function applyStaticText(): void {
+  const setText = (selector: string, key: string): void => {
+    const node = document.querySelector(selector);
+    if (node) node.textContent = t(key);
+  };
+
+  for (const option of elements.viewOptions) {
+    const view = option.dataset["view"];
+    if (view) option.textContent = t(`view.${view}`);
+  }
+
+  setText("#report-button .report-button__label", "action.report");
+  setText(".route-prompt__text", "action.route");
+
+  const search = document.querySelector<HTMLInputElement>(".search__input");
+  if (search) search.placeholder = t("search.placeholder");
+
+  setText(".disclaimer strong", "disclaimer.lead");
+}
+
 function showFatal(message: string): void {
   setStatus(message, "error");
   elements.reportButton.disabled = true;
@@ -461,10 +624,22 @@ async function start(): Promise<void> {
   renderLegend(activeView);
   setStatus("Loading flood risk…", "pending");
 
+  // Captured before anything else runs: a PWA shortcut or a shared link is
+  // the first thing the user asked for, and `clearIntent` will wipe it from
+  // the address bar as soon as it has been acted on.
+  const intent = readIntent(window.location.search);
+
+  // Before anything else renders, so the first paint is already in the user's
+  // language rather than flashing English and then correcting itself.
+  installLanguagePicker(() => {
+    renderLegend(activeView);
+    applyViewDecision();
+  });
+
   for (const option of elements.viewOptions) {
     option.addEventListener("click", () => {
       const chosen = option.dataset["view"];
-      if (chosen !== "now" && chosen !== "terrain") return;
+      if (chosen !== "now" && chosen !== "later" && chosen !== "terrain") return;
       manualView = chosen;
       // Re-decided rather than applied: a choice the safety rules refuse is
       // refused visibly, with the reason next to the button that refused it.
@@ -542,8 +717,10 @@ async function start(): Promise<void> {
   // at all. Both are decided once, here, so no control is ever offered that
   // would fail after the user had already granted a permission.
   const support = checkSupport(config.pushPublicKey);
-  const detailSheet = new DetailSheet(elements.detailSheet, (detail) =>
-    renderWatchSection(detail, config.pushPublicKey, support),
+  const detailSheet = new DetailSheet(
+    elements.detailSheet,
+    (detail) => renderWatchSection(detail, config.pushPublicKey, support),
+    (detail) => void sharePlace(detail.centre),
   );
 
   const reportFlow = new ReportFlow(
@@ -568,6 +745,7 @@ async function start(): Promise<void> {
   };
 
   const routeFlow = new RouteFlow(elements.routeSheet, {
+    onCommuteChanged: () => paintRouteButton(),
     mapCentre,
     onRoute: (result, origin, destination) => {
       if (!result || !result.found) {
@@ -605,6 +783,7 @@ async function start(): Promise<void> {
           hand: place.hand,
           susceptibility: place.susceptibility ?? 0,
           historicalFloodPoint: place.historicalFloodPoint,
+          history: place.history,
           updatedAt: place.updatedAt,
           terrainBand: place.terrainBand,
           terrainExplanation: place.terrainExplanation,
@@ -619,10 +798,31 @@ async function start(): Promise<void> {
     onClear: () => handles?.setSearchPin(null),
   });
 
+  /**
+   * The route button does the common thing first.
+   *
+   * With a trip saved, the morning question is "can I get to work" and it
+   * should cost one tap, not two map picks. The result sheet still offers
+   * "Pick another destination", so the general flow is one tap further in
+   * rather than gone. Reusing this button rather than adding another is also
+   * what keeps the action bar the height it already is.
+   */
+  const paintRouteButton = (): void => {
+    const saved = loadCommute();
+    const label = elements.routeButton.querySelector("span:last-child");
+    if (label) label.textContent = saved ? "Check my trip" : "Safe route";
+  };
+
   elements.routeButton.addEventListener("click", () => {
-    if (routeFlow.currentState === "picking") routeFlow.cancel();
+    if (routeFlow.currentState === "picking") {
+      routeFlow.cancel();
+      return;
+    }
+    if (loadCommute()) routeFlow.checkSavedCommute();
     else routeFlow.start();
   });
+
+  paintRouteButton();
   elements.routeCancel.addEventListener("click", () => routeFlow.cancel());
 
   map.on("load", () => {
@@ -652,6 +852,18 @@ async function start(): Promise<void> {
       lastRisk = result;
       describeRisk(result);
       applyViewDecision();
+
+      // Now that there are cells to match against, a shared place can open on
+      // the right one.
+      if (handles) {
+        applyIntent(
+          intent,
+          handles,
+          detailSheet,
+          () => reportFlow.open(),
+          () => routeFlow.start(),
+        );
+      }
     });
 
     void fetchReports(openingBbox)

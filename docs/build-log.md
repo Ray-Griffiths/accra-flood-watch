@@ -1716,3 +1716,133 @@ phone layout is unchanged to the pixel. Verified: at 390x844 the field is still
 322.8px at left 9.6 — identical to before — with no scroll, map 312px and
 16.6px of headroom. At 1440px it is 416px, 29% of the window, and the results
 panel tracks the field exactly. Screenshots: `docs/evidence/search-desktop-*.png`.
+
+## Nine features
+
+### Shareable links and app shortcuts
+
+`?at=lon,lat` reopens a place; `?action=report|route` comes from long-pressing
+the installed icon. One parser for both, total on malformed input — a link
+mangled by a chat app must open the map, not an error. Every intent reaches a
+state the ordinary UI can also reach, so a link is never a second unaudited
+way in. The intent is consumed on arrival: left in the URL, a shortcut would
+re-open the report flow on every resume.
+
+Sharing uses `navigator.share` with a clipboard fallback, and a dismissed
+share sheet is not reported as a failure. This is the only feature here that
+spreads the app by itself — Accra discusses flooding on WhatsApp, and until
+now this app could not join that conversation.
+
+### "The water has gone"
+
+The most dangerous feature in the project, and the asymmetry is the whole
+argument. Two reports confirm flooding; **three** clear it, inside a 60-minute
+window rather than three hours. A false alarm sends somebody the long way
+round; a false all-clear sends them into water.
+
+Two properties make it safe:
+
+- **Water coming back overrides a clear instantly.** If any flooding report is
+  newer than the clears, the clear is stale and the cell floods again without
+  waiting for anything to expire.
+- **Clearing never asserts safety.** It only stops reports counting, so the
+  cell falls back to what terrain and forecast say alone. It cannot push a
+  cell below that floor because it never adds a claim, only removes one.
+
+One implementation (`isClearedByReports`) shared by scoring, routing and the
+reports read path, so those three cannot disagree about whether a road is
+open. `classifyHazards` also lets a clear override a stale `confirmed` score,
+because the scoring job can lag by a quarter hour and people standing on dry
+ground outrank a number computed before they said so.
+
+### Later today
+
+The 24h forecast was stored and never shown. A third view answers the question
+people actually have in a storm: go now, or wait? Reports are deliberately
+excluded from it — somebody standing in water tells you about now, not this
+evening, and blurring that would remove the reason the views differ.
+
+**The third toggle is exactly what CLAUDE.md warns about**, so it was measured:
+390x844, worst-case text, 3 buttons — no scroll, map 327px, 31.6px above the
+floor, toggle 297px inside a 358px bar, all three still 40px tall.
+
+### Flood history
+
+Aggregate day-markers per cell: **a cell and a date, nothing else**. No
+coordinates, no time of day, no depth, no count, no identifier. Writing the
+same cell twice in a day overwrites, so a street with one loud reporter looks
+exactly like one with twenty quiet ones. 180-day TTL, so the record describes
+current behaviour rather than becoming a permanent archive of a neighbourhood.
+
+Reports still self-delete at 24 hours exactly as promised; what survives is a
+tally that could have been produced by counting rainfall. A cell with no
+history says **nothing at all** rather than "0 days" — an absence of reports is
+evidence nobody with a phone walked past, and a confident zero inverts that.
+The write grant is PutItem only: a public write path has no business reading
+back how often a place floods.
+
+### Adaptive cadence
+
+The schedule now ticks every 15 minutes and the handler decides. Full rescore
+at the hourly floor or while rain is forecast; a sub-second exit otherwise.
+Every ambiguous case resolves towards running — a needless rescore costs
+fractions of a cent, a missed one costs somebody not being told about water.
+**A missing forecast counts as wet**, for the same reason the map never paints
+green on a null.
+
+Skipped ticks deliberately do not emit `ScoringRuns`, so the stalled alarm
+still measures runs rather than ticks.
+
+### Saved commute
+
+One journey in localStorage and nowhere else. A commute is the most
+identifying thing this application could hold — a home, a workplace and a time
+of day — so the server never learns it and clearing site data is a complete
+delete. The label is a short fixed list, not free text, because a text field
+invites typing an address.
+
+The existing route button does the common thing first: with a trip saved it
+re-runs it in one tap. Reusing that button rather than adding one is also what
+keeps the action bar the height it already is.
+
+### Open data
+
+`terrain.geojson` (1.9MB, opens in QGIS) and `terrain.json` (553KB) with a
+README covering fields, method and caveats. CC-BY-4.0, 5,100 cells. Published
+under a stable unhashed path, so the deploy script excludes it from the
+year-long immutable caching and the service worker skips it — a 2MB file has
+no business in a phone's app-shell cache.
+
+Only the static terrain layer. Community reports are not published: they
+self-delete at 24 hours and publishing them would undo that.
+
+### Twi and Ga
+
+**Translation by table, never by model.** Every string is a fixed entry chosen
+by key, so a sentence cannot drift or quietly soften a warning between
+renders. Bedrock has no place in text that tells somebody whether a road is
+passable.
+
+**What is deliberately NOT translated:** the per-cell explanation sentences,
+which are composed on the server from live numbers. Those stay English until a
+Twi and Ga speaker has reviewed them — machine-drafting a safety sentence in a
+language nobody here can check is exactly the failure the first rule exists to
+prevent. The interface around them is translated, which is what lets somebody
+navigate the app at all.
+
+The draft locales show a **bilingual** notice saying the wording is unreviewed.
+A caveat about a translation that appears only in the language being warned
+about is a caveat its reader cannot read.
+
+The picker floats over the map, like the search field, because the layout has
+no vertical budget left.
+
+**This still needs a native speaker.** The drafts are flagged in the UI and in
+`DRAFT_LOCALES`; that review is the remaining work, not more code.
+
+### Verification
+
+- backend **246 tests**, web **93 tests**, both typechecks clean
+- `sam validate --lint` valid, `npm run build` succeeds
+- 390x844 measured with three toggles and in all three languages: no scroll,
+  0 console errors

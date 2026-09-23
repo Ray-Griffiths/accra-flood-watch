@@ -1,8 +1,9 @@
 import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { GeoPlacesClient, SearchTextCommand } from "@aws-sdk/client-geo-places";
-import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
-import { documents, requireTable } from "../lib/dynamo.ts";
+import { documents, queryAll, requireTable } from "../lib/dynamo.ts";
+import { summarise } from "../lib/history.ts";
 import { json, problem } from "../lib/http.ts";
 import {
   COVERAGE_ENVELOPE,
@@ -204,6 +205,7 @@ async function resolveRisk(match: PlaceMatch): Promise<Record<string, unknown>> 
   }
 
   const score = typeof item.score === "number" ? item.score : item.susceptibility;
+  const history = await floodHistory(cell);
 
   return {
     ...base,
@@ -232,5 +234,34 @@ async function resolveRisk(match: PlaceMatch): Promise<Record<string, unknown>> 
       item.historicalFloodPoint,
     ),
     updatedAt: item.updatedAt,
+    // Null when nothing has been reported here. Deliberately not "0 days":
+    // an absence of reports is evidence nobody with a phone walked past, not
+    // evidence the place does not flood.
+    ...(history ? { history } : {}),
   };
+}
+
+/**
+ * How many separate days flooding has been reported in this cell.
+ *
+ * A failure yields null rather than throwing: the flood history is context,
+ * and losing it must not cost the user the risk reading they searched for.
+ */
+async function floodHistory(cell: string): Promise<string | null> {
+  const table = process.env["FLOOD_HISTORY_TABLE"];
+  if (!table) return null;
+
+  try {
+    const markers = await queryAll<{ day: string }>(
+      new QueryCommand({
+        TableName: table,
+        KeyConditionExpression: "cell = :cell",
+        ExpressionAttributeValues: { ":cell": cell },
+      }),
+    );
+    return summarise(markers.map((marker) => marker.day)).sentence;
+  } catch (error) {
+    console.error(`Could not read flood history for ${cell}`, error);
+    return null;
+  }
 }

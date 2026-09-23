@@ -1,20 +1,24 @@
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { BatchWriteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
+import { decideCadence } from "../lib/cadence.ts";
 import { dispatchAlerts } from "../lib/dispatch.ts";
 import { documents, queryAll, requireTable } from "../lib/dynamo.ts";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { fetchForecasts, nearestForecast, type ForecastPoint } from "../lib/forecast.ts";
 import { bounds, neighbours } from "../lib/geohash.ts";
 import { emitMetrics } from "../lib/metrics.ts";
 import { isNewlyDangerous, type RaisedCell } from "../lib/notify.ts";
 import { coveragePrefixes, prefixOfCell } from "../lib/pilot.ts";
-import type { DepthLevel } from "../lib/risk.ts";
+import { isClearedByReports, type DepthLevel, type ReportCondition } from "../lib/risk.ts";
 import {
   DEFAULT_THRESHOLDS,
   DEFAULT_WEIGHTS,
   explain,
+  rainOutlook,
   reportsComponent,
   scoreCell,
+  type RainOutlook,
   type ScoringReport,
   type ScoringThresholds,
   type ScoringWeights,
@@ -53,7 +57,17 @@ interface RiskCellItem {
   rainfall6h?: number | null;
   rainfall24h?: number | null;
   reportScore?: number;
+  scoreLater?: number | null;
+  levelLater?: string | null;
 }
+
+/** Shared empty assessment: the later view is forecast-only, by design. */
+const EMPTY_REPORTS = {
+  score: 0,
+  confirmingCount: 0,
+  contributingCount: 0,
+  strongestDepth: null,
+} as const;
 
 /**
  * The fields that constitute this cell's answer.
@@ -69,6 +83,8 @@ const ANSWER_FIELDS = [
   "rainfall6h",
   "rainfall24h",
   "reportScore",
+  "scoreLater",
+  "levelLater",
 ] as const;
 
 function hasChanged(
@@ -84,6 +100,7 @@ function hasChanged(
 
 interface ReportItem {
   cell: string;
+  condition?: ReportCondition;
   depth: DepthLevel;
   submittedAt: string;
   expiresAt: number;
@@ -145,6 +162,30 @@ async function loadTuning(): Promise<TuningParameters> {
   }
 }
 
+interface ScoringMeta {
+  ranAt?: string;
+  rainOutlook?: RainOutlook | null;
+}
+
+/**
+ * What the previous run saw, so this one can decide whether to bother.
+ *
+ * Any failure reads as "no previous run", which makes the cadence decision
+ * fall through to rescoring. Being unable to read the meta row must never be
+ * the reason the city stops being scored.
+ */
+async function loadLastRun(table: string): Promise<ScoringMeta | null> {
+  try {
+    const result = await documents.send(
+      new GetCommand({ TableName: table, Key: { cellPrefix: "#meta", cell: "lastScoringRun" } }),
+    );
+    return (result.Item as ScoringMeta | undefined) ?? null;
+  } catch (error) {
+    console.error("Could not read the last scoring run; assuming none", error);
+    return null;
+  }
+}
+
 async function loadAllCells(table: string, prefixes: string[]): Promise<RiskCellItem[]> {
   const results = await Promise.all(
     prefixes.map((prefix) =>
@@ -197,16 +238,32 @@ async function loadReportsByCell(
   return byCell;
 }
 
-/** Reports in a cell and its eight neighbours, tagged with which is which. */
-function reportsAround(cell: string, byCell: Map<string, ReportItem[]>): ScoringReport[] {
+/**
+ * Reports in a cell and its eight neighbours, tagged with which is which.
+ *
+ * Clearing is resolved per cell before anything is collected. A cell whose
+ * residents have withdrawn their reports of water contributes nothing -- not
+ * to itself and not to its neighbours -- so the terrain and the forecast
+ * decide it alone. Nothing here can push a cell BELOW that floor, because
+ * clearing only ever removes evidence; it never adds a claim of safety.
+ */
+function reportsAround(cell: string, byCell: Map<string, ReportItem[]>, now: Date): ScoringReport[] {
   const collected: ScoringReport[] = [];
 
-  for (const item of byCell.get(cell) ?? []) {
-    collected.push({ cell, depth: item.depth, submittedAt: item.submittedAt, sameCell: true });
+  const own = byCell.get(cell) ?? [];
+  if (!isClearedByReports(own, now)) {
+    for (const item of own) {
+      if ((item.condition ?? "flooded") !== "flooded") continue;
+      collected.push({ cell, depth: item.depth, submittedAt: item.submittedAt, sameCell: true });
+    }
   }
 
   for (const neighbour of neighbours(cell)) {
-    for (const item of byCell.get(neighbour) ?? []) {
+    const nearby = byCell.get(neighbour) ?? [];
+    if (isClearedByReports(nearby, now)) continue;
+
+    for (const item of nearby) {
+      if ((item.condition ?? "flooded") !== "flooded") continue;
       collected.push({
         cell: neighbour,
         depth: item.depth,
@@ -254,6 +311,8 @@ export const handler = async (): Promise<{
   scored: number;
   forecastAvailable: boolean;
   alertsSent: number;
+  /** True when this tick decided there was nothing worth recomputing. */
+  skipped?: boolean;
 }> => {
   const startedAt = Date.now();
   const now = new Date();
@@ -261,6 +320,27 @@ export const handler = async (): Promise<{
   const riskTable = requireTable("RISK_CELLS_TABLE");
   const reportsTable = requireTable("REPORTS_TABLE");
   const prefixes = coveragePrefixes();
+
+  // The schedule ticks every fifteen minutes; most of those ticks should do
+  // nothing. Deciding here rather than in the schedule is what lets the
+  // cadence follow the weather instead of the clock.
+  const lastRun = await loadLastRun(riskTable);
+  const cadence = decideCadence({
+    now,
+    lastRanAt: lastRun?.ranAt ?? null,
+    lastOutlook: lastRun?.rainOutlook ?? null,
+  });
+
+  if (!cadence.rescore) {
+    // Deliberately does NOT emit ScoringRuns: that metric is what the stalled
+    // alarm watches, and a skipped tick is not a run. A full run happens at
+    // least hourly, so the alarm still sees one every hour.
+    emitMetrics({ ScoringSkipped: 1 });
+    console.log(`Skipped rescore: ${cadence.reason}.`);
+    return { scored: 0, forecastAvailable: false, alertsSent: 0, skipped: true };
+  }
+
+  console.log(`Rescoring: ${cadence.reason}.`);
 
   const [tuning, forecasts, cells, reportsByCell] = await Promise.all([
     loadTuning(),
@@ -289,12 +369,34 @@ export const handler = async (): Promise<{
       ? nearestForecast(forecastPoints, centreLat, centreLon)
       : null;
 
-    const reports = reportsComponent(reportsAround(cell.cell, reportsByCell), now);
+    const reports = reportsComponent(reportsAround(cell.cell, reportsByCell, now), now);
 
     const scored = scoreCell({
       susceptibility: cell.susceptibility,
       forecast,
       reports,
+      thresholds: tuning.thresholds,
+      weights: tuning.weights,
+    });
+
+    // The same cell, scored against the rest of the day instead of the next
+    // six hours. This answers a question the live view cannot: "should I go
+    // now, or wait?" -- which during a storm is the decision people are
+    // actually making. The 24h total is carried into BOTH slots because the
+    // acute reading is what the `now` view already covers; using it again
+    // here would just reproduce that answer.
+    //
+    // Reports are deliberately excluded. Somebody standing in water tells you
+    // about now, not about this evening, and letting a current observation
+    // colour a forecast view would blur the one distinction that makes the
+    // two views worth having.
+    const laterForecast = forecast
+      ? { next6hMm: forecast.next24hMm, next24hMm: forecast.next24hMm }
+      : null;
+    const later = scoreCell({
+      susceptibility: cell.susceptibility,
+      forecast: laterForecast,
+      reports: EMPTY_REPORTS,
       thresholds: tuning.thresholds,
       weights: tuning.weights,
     });
@@ -327,6 +429,10 @@ export const handler = async (): Promise<{
       rainfall6h: forecast?.next6hMm ?? null,
       rainfall24h: forecast?.next24hMm ?? null,
       reportScore: reports.score,
+      // Null when the feed was down, so the client can say "no forecast"
+      // rather than showing an empty later-today map that reads as calm.
+      scoreLater: forecast ? later.score : null,
+      levelLater: forecast ? later.level : null,
       updatedAt,
     } as Record<string, unknown>;
   });
@@ -348,6 +454,16 @@ export const handler = async (): Promise<{
   const written = await writeInBatches(riskTable, changed);
   const unchanged = items.length - changed.length;
 
+  // The wettest point anywhere in coverage decides the cadence. An area is
+  // only calm when all of it is: slowing down over a catchment with a storm
+  // in one corner is how the corner gets missed.
+  const wettestOutlook: RainOutlook | null = forecastAvailable
+    ? rainOutlook({
+        next6hMm: Math.max(...forecastPoints.map((p) => p.forecast.next6hMm), 0),
+        next24hMm: Math.max(...forecastPoints.map((p) => p.forecast.next24hMm), 0),
+      })
+    : null;
+
   // The health endpoint reads this. A "#meta" partition can never collide with
   // a geohash prefix, so it stays invisible to every viewport query.
   await writeInBatches(riskTable, [
@@ -357,6 +473,9 @@ export const handler = async (): Promise<{
       ranAt: updatedAt,
       cellsScored: written,
       forecastAvailable,
+      // Read by the next tick to decide whether to rescore. Null when the
+      // feed was down, which the cadence rule treats as wet rather than dry.
+      rainOutlook: wettestOutlook,
       durationMs: Date.now() - startedAt,
     },
   ]);

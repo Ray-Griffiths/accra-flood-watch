@@ -487,7 +487,7 @@ function applyView(map: MapLibreMap, view: MapView): void {
   );
   map.setLayoutProperty(RISK_LAYERS.label, "text-field", [
     "get",
-    view === "terrain" ? "terrainLabel" : "nowLabel",
+    view === "terrain" ? "terrainLabel" : view === "later" ? "laterLabel" : "nowLabel",
   ] as never);
 
   // Reports are observations, not model output. They stay visible in both
@@ -518,6 +518,10 @@ function riskCollection(cells: RiskCell[]): FeatureCollection {
         // without a second request.
         level: cell.level,
         nowLabel: levelWord(cell.level),
+        // Empty string rather than a level when the forecast feed was down,
+        // so the later view paints nothing instead of painting calm.
+        levelLater: cell.levelLater ?? "",
+        laterLabel: cell.levelLater ? levelWord(cell.levelLater) : "",
         terrainBand: cell.terrainBand ?? "",
         terrainLabel: terrainWord(cell.terrainBand),
         score: cell.score,

@@ -8,13 +8,45 @@
   "orientation": "portrait",
   "background_color": "#f6f8f9",
   "theme_color": "#0b3d5c",
-  "categories": ["weather", "navigation", "utilities"],
+  "categories": [
+    "weather",
+    "navigation",
+    "utilities"
+  ],
   "icons": [
     {
       "src": "/icons/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Report water",
+      "short_name": "Report",
+      "description": "Say how deep the water is where you are standing.",
+      "url": "/?action=report",
+      "icons": [
+        {
+          "src": "/icons/icon.svg",
+          "sizes": "any",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Safe route",
+      "short_name": "Route",
+      "description": "Find a way around flooding to where you are going.",
+      "url": "/?action=route",
+      "icons": [
+        {
+          "src": "/icons/icon.svg",
+          "sizes": "any",
+          "type": "image/svg+xml"
+        }
+      ]
     }
   ]
 }
