@@ -11,6 +11,11 @@
     <title>Accra Flood Watch</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <!-- The body face and the headline face both appear above the fold. The
+         third weight is not preloaded: it is only used by the legend, which
+         renders after the first risk response. -->
+    <link rel="preload" href="/fonts/atkinson-400.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/source-serif-4.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>

@@ -10,6 +10,40 @@
  *   - meaning never carried by colour alone
  */
 
+/*
+ * Self-hosted Latin subsets, 76 KB total, served from this distribution behind
+ * the same long cache as everything else.
+ *
+ * This supersedes the system-fonts-only rule in CLAUDE.md, under conditions:
+ * `swap` plus a metric-ish system fallback means text paints immediately in a
+ * fallback and the webfont never blocks. If a throttled-3G measurement shows
+ * first contentful paint regressing, revert to the fallback stacks alone -- the
+ * type scale carries more of the hierarchy here than the typeface does.
+ */
+@font-face {
+  font-family: "Source Serif 4";
+  src: url("/fonts/source-serif-4.woff2") format("woff2-variations");
+  font-weight: 200 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Next";
+  src: url("/fonts/atkinson-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Next";
+  src: url("/fonts/atkinson-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 @import "maplibre-gl/dist/maplibre-gl.css";
 
 :root {
