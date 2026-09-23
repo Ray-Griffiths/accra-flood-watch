@@ -45,3 +45,7 @@ Thumbs.db
 # Local browser-verification artefacts (screenshots copied to docs/evidence/)
 .playwright-mcp/
 .impeccable/hook.cache.json
+
+# Local design preview scratch (not part of the app)
+.design-preview/
+.impeccable/config.local.json
