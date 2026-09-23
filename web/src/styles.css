@@ -10,9 +10,12 @@
  *   - meaning never carried by colour alone
  */
 
+@import "maplibre-gl/dist/maplibre-gl.css";
+
 /*
  * Self-hosted Latin subsets, 76 KB total, served from this distribution behind
- * the same long cache as everything else.
+ * the same long cache as everything else. Declared below the `@import` above,
+ * because CSS requires `@import` to precede every rule but `@charset`/`@layer`.
  *
  * This supersedes the system-fonts-only rule in CLAUDE.md, under conditions:
  * `swap` plus a metric-ish system fallback means text paints immediately in a
@@ -43,8 +46,6 @@
   font-style: normal;
   font-display: swap;
 }
-
-@import "maplibre-gl/dist/maplibre-gl.css";
 
 :root {
   --ink: #10242e;
