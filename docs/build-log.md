@@ -1581,3 +1581,138 @@ Not deployed. This batch changes the CloudFront price class, four alarms, the
 write pattern of the hourly job and the reports API contract, so it wants one
 `sam deploy`, then the web sync, then a live check of `/api/reports` for
 `confirmedCells` and a scoring run showing the changed-only write counts.
+
+### Deployed (second pass)
+
+`sam build` + `sam deploy`, then `scripts/deploy-web.ps1`. Health 200 before,
+between and after. The public URL was never interrupted.
+
+Verified live:
+
+| item | evidence |
+|---|---|
+| #10 confirmed cells | `/api/reports` now returns `confirmedCells` (`[]` — nothing confirmed right now, which is correct). |
+| #8 observed time honoured | A report posted with `observedAt` five minutes back came back with `submittedAt` five minutes back, **not** the arrival time. |
+| #8 stale refused | 45 minutes old → 422, *"more than half an hour old, so it is no longer a reliable description of the water."* |
+| #8 future refused | +10 minutes → 422, *"dated in the future. Check your device clock."* |
+| #8 queue end to end | With `fetch` forced to fail on the live page: sheet reads **"Saved — not sent yet"**, entry lands in localStorage carrying its `observedAt`. |
+| #19 sheets | Report sheet: focus moves in on open, Escape closes it, focus returns to `#report-button`. |
+| #12 price class | Distribution reports `PriceClass_200`. |
+| #17 alarms | `alerts-failing`, `api-5xx`, `lambda-errors` all created and `OK`. |
+| regression checks | `/api/risk` still Miss→Hit at the edge; `/api/nope` still 404 `application/json`; 390x844 still no scroll, 54.7px headroom, 0 console errors. |
+
+Test data: one report was posted at `ebzzfge` to exercise `observedAt` against
+the live handler, then deleted. The queued browser entry was cleared in the
+same step. The two pre-existing community reports were left alone.
+
+**The scoring-stalled alarm went into ALARM on deploy, and that was
+predictable.** Repointing it from `CellsScored` to the new `ScoringRuns` metric
+pointed it at a metric with no datapoints, and `TreatMissingData: breaching`
+does exactly what it says. It clears on the first hourly run that emits the
+metric. Worth noting for next time: changing an alarm's metric is a guaranteed
+false page unless the new metric already has history, and `OKActions` means a
+second email when it recovers.
+
+`scoreRisk` was deliberately NOT invoked by hand to check the changed-only
+write counts. There are five live watchers, and a manual run can dispatch real
+push notifications to real people seven minutes before the scheduled one would
+have. The hourly run was read from its own logs instead.
+
+## Place search
+
+"Is Kaneshie Market flooded?" without panning a map one-handed in the rain to
+find a junction you can already name.
+
+### Shape
+
+`GET /api/search?q=` → GeoPlaces `SearchText` (biased to the coverage centre)
+→ `isInsideCoverage` → `cellFor` → one `GetItem` on `RiskCells`. Every helper
+already existed; the IAM grant is the same shape as the GeoRoutes one. Called
+with IAM from Lambda and never from the browser, per the standing cost rule,
+and throttled at 5/s burst 10 because it is the only read that is billed per
+call. The client searches on submit with a 450ms debounce, not per keystroke.
+
+Choosing a result flies the map, drops a labelled pin, and opens the **existing
+detail sheet** — which already renders level, score, explanation, nearby
+reports and the watch control. The feature adds a way in to that answer rather
+than a second version of it.
+
+### Two things it deliberately refuses to do
+
+**It never turns an absence of data into good news.** A match outside the
+covered areas is badged "Outside the area this covers", styled as a dashed
+neutral chip rather than borrowing the level palette — so a glance cannot read
+it as an all-clear. Verified live: Kumasi and Weija both come back uncovered.
+
+**It never presents a match as a verdict.** Geocoding Accra is uneven, and the
+live service proves it: "Ring Road Central" returns an Ecobank branch. So the
+list shows the matched name with the level beside it, and the caption reads
+"Tap one to see it on the map and check it is the right place." The pin is the
+point as much as the answer is.
+
+### Layout: the constraint that shaped it
+
+The page fits 390x844 with 16.6px spare in the worst case. A search band in the
+document flow would have spent all of it — measured, it pushed the page **35px
+into scrolling**. So the control is absolutely positioned over the map inside
+`.stage`. Re-measured after: map 312px, headroom 16.6px, **byte-identical to
+before search existed**. Input is 44px tall at exactly 16px font, below which
+iOS Safari zooms the page on focus and pushes the map off screen.
+
+### Two bugs caught during the build
+
+**The detail sheet was being fed invented terrain.** `main.ts` hardcoded
+`hand: 0` and passed the risk score as susceptibility, so every searched place
+claimed "Height above nearest drain: 0.0 m". It was caught in a screenshot, and
+it was nearly missed: the first place tested was Kaneshie Market, whose real
+HAND *is* 0. The search response now carries `hand`, `susceptibility`, `basis`
+and `historicalFloodPoint` from the stored cell, and the sheet only opens when
+there is a real reading behind it. Verified across four places — Achimota
+Hospital 44.3m on high ground, Nima 0m with susceptibility 84.4, which matches
+how Nima actually behaves.
+
+**The service worker served a stale stylesheet for half an hour.** New CSS
+appeared not to apply at all in dev; `position` stayed `static`. The cause was
+`afw-shell-v3` serving a cached `/src/styles.css` cache-first — even a
+`fetch(..., {cache:'reload'})` came back without the new rules. Harmless in
+production, where asset filenames are hashed, but worth knowing: **when a dev
+style change appears to do nothing, unregister the service worker before
+debugging the CSS.**
+
+`search.ts` also reintroduced the constructor parameter property that had
+already made `api.ts` untestable. Caught by the test runner this time. The
+wording decision was extracted as a pure `describeResult` and tested there —
+the DOM wiring is untested, matching the rest of this codebase.
+
+### Verification
+
+- backend 211 tests, web 66 tests, both typechecks clean, `sam validate` valid
+- live: Kaneshie Market → covered, level, real terrain; Kumasi/Weija →
+  uncovered; empty query → 400 with a readable sentence
+- live UI at 390x844: search → fly → pin → detail sheet, no scroll, 0 console
+  errors. Screenshots in `docs/evidence/search-*.png`
+- health 200 throughout both deploys
+
+### Follow-up: the search field stretched across a desktop window
+
+Reported after the first deploy: on a wide screen the field ran the full width
+of the window. `right: 3.6rem` is what keeps it clear of the zoom controls on a
+390px phone, and is right there, but on a 1440px monitor it dragged one input
+across the whole viewport and put the clear button a long way from the text.
+
+Anchored top-left and capped instead. A search box belongs in the corner of a
+map; centring it would sit over exactly the ground being read.
+
+The first attempt used a `@media (min-width: 40rem)` breakpoint, and measuring
+it showed why that was the wrong tool: at 639px the field was **572px wide
+(89% of the viewport)** and at 640px it snapped to 416px, so the worst case sat
+just below whichever threshold was picked. Replaced with a single
+`width: min(26rem, calc(100% - 4.2rem))` — no threshold to get wrong, the cap
+wins on a wide screen and the calc wins on a narrow one, handing over smoothly
+at about 483px (412.8px just below, 416px above).
+
+The 4.2rem is 0.6rem of left offset plus 3.6rem of zoom-control clearance, so
+phone layout is unchanged to the pixel. Verified: at 390x844 the field is still
+322.8px at left 9.6 — identical to before — with no scroll, map 312px and
+16.6px of headroom. At 1440px it is 416px, 29% of the window, and the results
+panel tracks the field exactly. Screenshots: `docs/evidence/search-desktop-*.png`.

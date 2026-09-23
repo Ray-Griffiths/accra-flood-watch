@@ -453,6 +453,13 @@ Resources:
         "POST /api/watch":
           ThrottlingRateLimit: 5
           ThrottlingBurstLimit: 10
+        # Every call here is a billed GeoPlaces request. The client searches on
+        # submit rather than per keystroke, so a real user generates one call
+        # per search; this is the ceiling that keeps a script from turning the
+        # only pay-per-call read into a bill.
+        "GET /api/search":
+          ThrottlingRateLimit: 5
+          ThrottlingBurstLimit: 10
       AccessLogSettings:
         DestinationArn: !GetAtt ApiAccessLogGroup.Arn
         # Request bodies are deliberately excluded so that reported
@@ -586,6 +593,55 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${GetReportsFunction}"
+      RetentionInDays: 7
+
+  # ----------------------------------------------------------------------------
+  # Place search. Answers "is Kaneshie Market flooded" without making somebody
+  # pan a map one-handed in the rain to find a junction they can already name.
+  #
+  # GeoPlaces is billed per request and is reached with IAM from here, never
+  # from the browser -- the browser holds only the referer-restricted tile key.
+  # The route is throttled harder than the other reads for the same reason: it
+  # is the only read that costs money per call.
+  # ----------------------------------------------------------------------------
+  SearchPlacesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/searchPlaces.handler
+      Description: Find a place by name and report the flood risk at it.
+      Environment:
+        Variables:
+          RISK_CELLS_TABLE: !Ref RiskCellsTable
+      Policies:
+        - Statement:
+            # Read-only: search resolves a name to a cell and reads that cell.
+            - Effect: Allow
+              Action: dynamodb:GetItem
+              Resource: !GetAtt RiskCellsTable.Arn
+            - Effect: Allow
+              Action: geo-places:SearchText
+              Resource: !Sub "arn:${AWS::Partition}:geo-places:${AWS::Region}::provider/default"
+      Events:
+        SearchPlaces:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /api/search
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/searchPlaces.ts
+
+  SearchPlacesFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SearchPlacesFunction}"
       RetentionInDays: 7
 
   # ----------------------------------------------------------------------------

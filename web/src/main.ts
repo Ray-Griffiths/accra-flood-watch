@@ -32,6 +32,7 @@ import { DetailSheet, type CellDetail } from "./detail.ts";
 import { stylesForView, type MapView } from "./levels.ts";
 import { DEFAULT_ZOOM, RISK_LAYERS, createMap, installOverlays, type MapHandles } from "./map.ts";
 import { ReportFlow } from "./reporting.ts";
+import { PlaceSearch } from "./search.ts";
 import { RouteFlow, type RouteState } from "./route-flow.ts";
 import { decideView, hasConfirmedCell } from "./view.ts";
 import {
@@ -45,6 +46,7 @@ import {
 
 const elements = {
   map: document.querySelector<HTMLElement>("#map")!,
+  search: document.querySelector<HTMLElement>("#search")!,
   tagline: document.querySelector<HTMLElement>("#tagline")!,
   status: document.querySelector<HTMLElement>("#status")!,
   legend: document.querySelector<HTMLElement>("#legend")!,
@@ -581,6 +583,42 @@ async function start(): Promise<void> {
     onState: renderRouteState,
   }, coverage);
 
+  // Search resolves a name to a place, drops a pin on it, and then hands the
+  // question to the detail sheet -- which already renders level, score,
+  // explanation, nearby reports and the watch control. The search feature adds
+  // a way IN to that answer rather than a second version of it.
+  const placeSearch = new PlaceSearch(elements.search, {
+    onChoose: (place) => {
+      handles?.setSearchPin(place);
+
+      // Only open the sheet when there is a real reading behind it. Every
+      // field below comes from the server; none is defaulted, because the
+      // sheet prints them as facts -- an invented `hand` showed up as
+      // "Height above nearest drain: 0.0 m" over real ground.
+      if (place.covered && place.cell && place.level && typeof place.hand === "number") {
+        detailSheet.show({
+          cell: place.cell,
+          level: place.level,
+          score: place.score ?? place.susceptibility ?? 0,
+          basis: place.basis ?? "terrain-only",
+          explanation: place.explanation ?? "",
+          hand: place.hand,
+          susceptibility: place.susceptibility ?? 0,
+          historicalFloodPoint: place.historicalFloodPoint,
+          updatedAt: place.updatedAt,
+          terrainBand: place.terrainBand,
+          terrainExplanation: place.terrainExplanation,
+          view: activeView,
+          centre: [place.longitude, place.latitude],
+          reports: currentReports
+            .filter((report) => report.cell === place.cell)
+            .map((report) => ({ depthLabel: report.depthLabel, ageLabel: report.ageLabel })),
+        });
+      }
+    },
+    onClear: () => handles?.setSearchPin(null),
+  });
+
   elements.routeButton.addEventListener("click", () => {
     if (routeFlow.currentState === "picking") routeFlow.cancel();
     else routeFlow.start();
@@ -634,6 +672,10 @@ async function start(): Promise<void> {
       });
 
     map.on("moveend", scheduleRefresh);
+    // Dragging the map is the user moving on from the search. Keep the pin and
+    // the typed text; just get the list out of the way of the thing it is
+    // pointing at.
+    map.on("dragstart", () => placeSearch.collapse());
     startPolling();
     installQueueFlush();
 

@@ -32,6 +32,7 @@ const RISK_SOURCE = "risk-cells";
 const REPORTS_SOURCE = "flood-reports";
 const ROUTE_SOURCE = "safe-route";
 const ROUTE_POINTS_SOURCE = "route-points";
+const SEARCH_PIN_SOURCE = "search-pin";
 
 export const RISK_LAYERS = {
   fill: "risk-fill",
@@ -64,6 +65,14 @@ export interface MapHandles {
   setRoute(route: DrawnRoute | null): void;
   /** Frame a route so both ends are on screen at once. */
   frameRoute(route: DrawnRoute): void;
+  /**
+   * Mark a searched place and move to it, or clear the mark with null.
+   *
+   * The pin is the point of the search feature as much as the answer is:
+   * geocoding Accra returns the wrong junction often enough that the user has
+   * to be shown WHERE the reading applies before trusting it.
+   */
+  setSearchPin(place: { longitude: number; latitude: number; title: string } | null): void;
   viewportBbox(): Bbox;
   /** Current zoom, so the caller can decide whether the overlay is meaningful. */
   zoom(): number;
@@ -170,6 +179,10 @@ export function installOverlays(map: MapLibreMap): MapHandles {
   }
   if (!map.getSource(ROUTE_POINTS_SOURCE)) {
     map.addSource(ROUTE_POINTS_SOURCE, { type: "geojson", data: emptyCollection() });
+  }
+
+  if (!map.getSource(SEARCH_PIN_SOURCE)) {
+    map.addSource(SEARCH_PIN_SOURCE, { type: "geojson", data: emptyCollection() });
   }
 
   const beforeId = firstSymbolLayerId(map);
@@ -284,6 +297,43 @@ export function installOverlays(map: MapLibreMap): MapHandles {
     });
   }
 
+  // The search pin sits above the overlay and the route. It answers "which
+  // place is this reading about", so anything covering it defeats it.
+  if (!map.getLayer("search-pin")) {
+    map.addLayer({
+      id: "search-pin",
+      type: "circle",
+      source: SEARCH_PIN_SOURCE,
+      paint: {
+        "circle-radius": 10,
+        "circle-color": "#ffffff",
+        "circle-stroke-color": "#0b3d5c",
+        "circle-stroke-width": 4,
+      },
+    });
+  }
+
+  if (!map.getLayer("search-pin-label")) {
+    map.addLayer({
+      id: "search-pin-label",
+      type: "symbol",
+      source: SEARCH_PIN_SOURCE,
+      layout: {
+        "text-field": ["get", "title"],
+        "text-font": FONT_BOLD,
+        "text-size": 13,
+        "text-offset": [0, 1.4],
+        "text-anchor": "top",
+        "text-max-width": 12,
+      },
+      paint: {
+        "text-color": "#0b3d5c",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 2,
+      },
+    });
+  }
+
   // Reports sit above everything, including labels and the route. They are the
   // most current thing on the map and outrank the model.
   if (!map.getLayer("reports-halo")) {
@@ -363,6 +413,33 @@ export function installOverlays(map: MapLibreMap): MapHandles {
         // has not been shown.
         { padding: { top: 60, right: 40, bottom: 220, left: 40 }, duration: 600 },
       );
+    },
+    setSearchPin: (place) => {
+      if (!place) {
+        setData(SEARCH_PIN_SOURCE, emptyCollection());
+        return;
+      }
+
+      setData(SEARCH_PIN_SOURCE, {
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            geometry: { type: "Point", coordinates: [place.longitude, place.latitude] },
+            properties: { title: place.title },
+          },
+        ],
+      });
+
+      // Zoom in far enough that the risk overlay is drawn -- arriving at a
+      // place with no cells painted would answer the question with a blank.
+      map.flyTo({
+        center: [place.longitude, place.latitude],
+        zoom: Math.max(map.getZoom(), 16),
+        // Lifts the target above the fixed action bar at the bottom.
+        offset: [0, -60],
+        duration: 800,
+      });
     },
     viewportBbox: () => {
       const b = map.getBounds();

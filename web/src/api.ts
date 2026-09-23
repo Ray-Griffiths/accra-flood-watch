@@ -334,6 +334,54 @@ export function calculateRoute(
  * writes it as the report's timestamp, so a queued report describes when the
  * water was seen rather than when the connection came back.
  */
+/**
+ * A place the search matched.
+ *
+ * `covered: false` means the grid has never seen this ground -- it carries no
+ * risk fields at all, because reporting `low` for unscored ground would be
+ * inventing an all-clear.
+ *
+ * The title and coordinates are always present so the interface can show WHAT
+ * it matched and let the user confirm it on the map. Geocoding Accra is
+ * uneven, and a confident answer about the wrong junction is the failure mode
+ * this shape exists to prevent.
+ */
+export interface PlaceResult {
+  title: string;
+  longitude: number;
+  latitude: number;
+  covered: boolean;
+  areaId?: string;
+  cell?: string;
+  score?: number;
+  level?: string;
+  /** Terrain facts, so the detail sheet never has to invent them. */
+  susceptibility?: number;
+  hand?: number;
+  basis?: string;
+  historicalFloodPoint?: string;
+  explanation?: string;
+  terrainBand?: string;
+  terrainExplanation?: string;
+  updatedAt?: string;
+  /** Present when there is no risk reading to give, and says why. */
+  message?: string;
+}
+
+export interface SearchResponse {
+  query: string;
+  results: PlaceResult[];
+  resultCount?: number;
+  coverage?: string;
+  /** The place service did not answer. Distinct from "nothing matched". */
+  failed?: boolean;
+  message?: string;
+}
+
+export function searchPlaces(query: string): Promise<SearchResponse> {
+  return request<SearchResponse>(`/api/search?q=${encodeURIComponent(query)}`);
+}
+
 export function submitReport(
   latitude: number,
   longitude: number,

@@ -32,6 +32,30 @@
       </header>
 
       <main class="stage">
+        <!-- Floats over the map rather than taking a band of its own. The
+             layout fits a 390x844 phone with about 17px spare in the worst
+             case, and a search bar in the document flow would spend all of
+             it. -->
+        <form id="search" class="search" role="search" autocomplete="off">
+          <label class="search__label" for="search-input">Search for a place</label>
+          <div class="search__field">
+            <span class="search__icon" aria-hidden="true">⌕</span>
+            <input
+              id="search-input"
+              class="search__input"
+              type="search"
+              name="q"
+              enterkeyhint="search"
+              placeholder="Street or landmark…"
+              aria-describedby="search-results"
+            />
+            <button type="button" class="search__clear" aria-label="Clear search" hidden>
+              ✕
+            </button>
+          </div>
+          <div id="search-results" class="search__results" role="region" aria-live="polite" hidden></div>
+        </form>
+
         <div id="map" class="map" role="application" aria-label="Flood risk map of the pilot area">
           <noscript>
             <p class="noscript">
