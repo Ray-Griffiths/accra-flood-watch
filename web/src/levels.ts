@@ -22,10 +22,27 @@
  */
 
 import { t } from "./i18n.ts";
+import type { Theme } from "./theme.ts";
 
 export type RiskLevel = "low" | "watch" | "high" | "confirmed";
 
 export const RISK_LEVELS: readonly RiskLevel[] = ["low", "watch", "high", "confirmed"];
+
+/**
+ * A ramp colour in both themes.
+ *
+ * The light side is not an inversion of the dark one. Each keeps the ordering
+ * and the meaning but drops to hues that survive on its own ground, because a
+ * colour tuned to glow on asphalt goes muddy on paper and vice versa.
+ */
+export interface ThemeColour {
+  light: string;
+  dark: string;
+}
+
+export function colourFor(style: LevelStyle, theme: Theme): string {
+  return style.colour[theme];
+}
 
 export interface LevelStyle {
   /** The word shown on the cell and in the legend. Never abbreviated away. */
@@ -36,7 +53,16 @@ export interface LevelStyle {
    * Colour-blind-distinguishable by lightness as well as hue, so the ramp
    * still reads as an ordering under deuteranopia or in direct sun.
    */
-  colour: string;
+  colour: ThemeColour;
+  /**
+   * The CSS custom property this level's colour resolves through, e.g.
+   * `--k-low`. Consumers that end up in the DOM (the legend, search-result
+   * badges, the detail sheet) set `var(${cssVariable})` rather than a
+   * resolved hex, so CSS -- not JavaScript -- decides which theme's shade is
+   * showing. That is what keeps an open detail sheet from holding a stale
+   * colour across a theme switch.
+   */
+  cssVariable: string;
   /** Pattern id registered with the map. The shape channel. */
   pattern: string;
   /** Outline weight. Danger gets a heavier edge, another non-colour cue. */
@@ -48,7 +74,8 @@ export const LEVEL_STYLES: Record<RiskLevel, LevelStyle> = {
   low: {
     label: "Low",
     meaning: "No particular concern right now",
-    colour: "#2b83ba",
+    colour: { light: "#8fb0c4", dark: "#5b8ca6" },
+    cssVariable: "--k-low",
     pattern: "risk-dots",
     outlineWidth: 0.5,
     opacity: 0.25,
@@ -56,7 +83,8 @@ export const LEVEL_STYLES: Record<RiskLevel, LevelStyle> = {
   watch: {
     label: "Watch",
     meaning: "Could develop — stay aware",
-    colour: "#e08214",
+    colour: { light: "#e0a511", dark: "#ffc53d" },
+    cssVariable: "--k-watch",
     pattern: "risk-hatch",
     outlineWidth: 1,
     opacity: 0.4,
@@ -64,7 +92,8 @@ export const LEVEL_STYLES: Record<RiskLevel, LevelStyle> = {
   high: {
     label: "High",
     meaning: "Flooding likely — avoid if you can",
-    colour: "#d7301f",
+    colour: { light: "#e35d18", dark: "#ff7a1f" },
+    cssVariable: "--k-high",
     pattern: "risk-cross",
     outlineWidth: 1.5,
     opacity: 0.45,
@@ -72,7 +101,8 @@ export const LEVEL_STYLES: Record<RiskLevel, LevelStyle> = {
   confirmed: {
     label: "Flooded now",
     meaning: "People are reporting water now",
-    colour: "#6b0000",
+    colour: { light: "#c8261a", dark: "#ff4530" },
+    cssVariable: "--k-flood",
     pattern: "risk-solid",
     outlineWidth: 2.5,
     opacity: 0.6,
@@ -127,7 +157,8 @@ export const TERRAIN_STYLES: Record<TerrainBand, LevelStyle> = {
   "floods-first": {
     label: "Floods first",
     meaning: "Goes under earliest when it rains hard",
-    colour: "#3f007d",
+    colour: { light: "#7c5ea6", dark: "#9a7bd6" },
+    cssVariable: "--k-first",
     pattern: "terrain-dense",
     outlineWidth: 1.5,
     opacity: 0.4,
@@ -135,7 +166,8 @@ export const TERRAIN_STYLES: Record<TerrainBand, LevelStyle> = {
   "floods-heavy": {
     label: "Floods in heavy rain",
     meaning: "Goes under when rain is heavy or long",
-    colour: "#6a51a3",
+    colour: { light: "#a291bf", dark: "#6b5896" },
+    cssVariable: "--k-heavy",
     pattern: "terrain-medium",
     outlineWidth: 1,
     opacity: 0.3,
@@ -143,7 +175,8 @@ export const TERRAIN_STYLES: Record<TerrainBand, LevelStyle> = {
   "usually-dry": {
     label: "Usually stays dry",
     meaning: "Drains reasonably well",
-    colour: "#9e9ac8",
+    colour: { light: "#ccd4d7", dark: "#2a3a45" },
+    cssVariable: "--k-dry",
     pattern: "terrain-sparse",
     outlineWidth: 0.5,
     opacity: 0.18,

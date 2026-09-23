@@ -25,8 +25,9 @@ import {
 import type { FeatureCollection } from "geojson";
 
 import type { FloodReport, RiskCell } from "./api.ts";
-import { matchByView, type MapView } from "./levels.ts";
+import { colourFor, matchByView, type MapView } from "./levels.ts";
 import { registerRiskPatterns } from "./patterns.ts";
+import type { Theme } from "./theme.ts";
 
 const RISK_SOURCE = "risk-cells";
 const REPORTS_SOURCE = "flood-reports";
@@ -61,6 +62,8 @@ export interface MapHandles {
   setReports(reports: FloodReport[]): void;
   /** Repaint the overlay in the other vocabulary. Data is not re-fetched. */
   setView(view: MapView): void;
+  /** Recolour the overlay in place. Patterns are re-registered, not repainted. */
+  setTheme(theme: Theme): void;
   /** Draw a route, or clear it with null. */
   setRoute(route: DrawnRoute | null): void;
   /** Frame a route so both ends are on screen at once. */
@@ -165,8 +168,10 @@ function emptyCollection(): FeatureCollection {
  * Add the overlay sources and layers. Called once the style is ready, and
  * again if the style ever reloads (which drops both sources and images).
  */
-export function installOverlays(map: MapLibreMap): MapHandles {
-  registerRiskPatterns(map);
+export function installOverlays(map: MapLibreMap, theme: Theme): MapHandles {
+  let activeTheme: Theme = theme;
+  let currentView: MapView = "now";
+  registerRiskPatterns(map, activeTheme);
 
   if (!map.getSource(RISK_SOURCE)) {
     map.addSource(RISK_SOURCE, { type: "geojson", data: emptyCollection() });
@@ -194,7 +199,7 @@ export function installOverlays(map: MapLibreMap): MapHandles {
         type: "fill",
         source: RISK_SOURCE,
         paint: {
-          "fill-color": matchByView("now", (s) => s.colour, "#2b83ba") as never,
+          "fill-color": matchByView("now", (s) => colourFor(s, activeTheme), "#5b8ca6") as never,
           "fill-opacity": matchByView("now", (s) => s.opacity, 0.25) as never,
         },
       },
@@ -226,7 +231,7 @@ export function installOverlays(map: MapLibreMap): MapHandles {
         type: "line",
         source: RISK_SOURCE,
         paint: {
-          "line-color": matchByView("now", (s) => s.colour, "#2b83ba") as never,
+          "line-color": matchByView("now", (s) => colourFor(s, activeTheme), "#5b8ca6") as never,
           "line-width": matchByView("now", (s) => s.outlineWidth, 0.5) as never,
           "line-opacity": 0.9,
         },
@@ -395,7 +400,15 @@ export function installOverlays(map: MapLibreMap): MapHandles {
     map,
     setRisk: (cells) => setData(RISK_SOURCE, riskCollection(cells)),
     setReports: (reports) => setData(REPORTS_SOURCE, reportCollection(reports)),
-    setView: (view) => applyView(map, view),
+    setView: (view) => {
+      currentView = view;
+      applyView(map, view, activeTheme);
+    },
+    setTheme: (next) => {
+      activeTheme = next;
+      registerRiskPatterns(map, activeTheme);
+      applyView(map, currentView, activeTheme);
+    },
     setRoute: (route) => {
       setData(ROUTE_SOURCE, route ? routeCollection(route) : emptyCollection());
       setData(ROUTE_POINTS_SOURCE, route ? routePointCollection(route) : emptyCollection());
@@ -457,13 +470,13 @@ export function installOverlays(map: MapLibreMap): MapHandles {
  * the reason the switch can be instant on a phone with a bad connection, which
  * is the only condition under which it matters.
  */
-function applyView(map: MapLibreMap, view: MapView): void {
+function applyView(map: MapLibreMap, view: MapView, theme: Theme): void {
   if (!map.getLayer(RISK_LAYERS.fill)) return;
 
   map.setPaintProperty(
     RISK_LAYERS.fill,
     "fill-color",
-    matchByView(view, (s) => s.colour, "#2b83ba") as never,
+    matchByView(view, (s) => colourFor(s, theme), "#5b8ca6") as never,
   );
   map.setPaintProperty(
     RISK_LAYERS.fill,
@@ -478,7 +491,7 @@ function applyView(map: MapLibreMap, view: MapView): void {
   map.setPaintProperty(
     RISK_LAYERS.outline,
     "line-color",
-    matchByView(view, (s) => s.colour, "#2b83ba") as never,
+    matchByView(view, (s) => colourFor(s, theme), "#5b8ca6") as never,
   );
   map.setPaintProperty(
     RISK_LAYERS.outline,

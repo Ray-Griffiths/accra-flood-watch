@@ -9,7 +9,8 @@
 
 import type { Map as MapLibreMap } from "maplibre-gl";
 
-import { LEVEL_STYLES, RISK_LEVELS, TERRAIN_BANDS, TERRAIN_STYLES, type LevelStyle } from "./levels.ts";
+import { LEVEL_STYLES, RISK_LEVELS, TERRAIN_BANDS, TERRAIN_STYLES, colourFor, type LevelStyle } from "./levels.ts";
+import type { Theme } from "./theme.ts";
 
 /** Drawn at 2x and registered with pixelRatio 2, so it is sharp on retina. */
 const TILE = 16;
@@ -132,8 +133,13 @@ function strokeDiagonal(ctx: CanvasRenderingContext2D, direction: "forward" | "b
  *
  * Safe to call more than once: a style reload drops registered images, so the
  * caller re-runs this on `styledata` rather than tracking it.
+ *
+ * Patterns are registered images, not paint. A theme change has to redraw and
+ * re-register them; repainting alone leaves the old theme's colour baked into
+ * the texture while the flat fill underneath moves, which reads as a rendering
+ * fault rather than a theme.
  */
-export function registerRiskPatterns(map: MapLibreMap): void {
+export function registerRiskPatterns(map: MapLibreMap, theme: Theme): void {
   const styles: LevelStyle[] = [
     ...RISK_LEVELS.map((level) => LEVEL_STYLES[level]),
     ...TERRAIN_BANDS.map((band) => TERRAIN_STYLES[band]),
@@ -145,7 +151,7 @@ export function registerRiskPatterns(map: MapLibreMap): void {
     const kind = PATTERN_KIND[style.pattern];
     if (!kind) continue;
 
-    const image = draw(kind, style.colour);
+    const image = draw(kind, colourFor(style, theme));
     if (!image) continue;
 
     map.addImage(style.pattern, image, { pixelRatio: SCALE });

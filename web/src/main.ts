@@ -154,7 +154,7 @@ function renderLegend(view: MapView): void {
 
     const swatch = document.createElement("span");
     swatch.className = `legend__swatch legend__swatch--${value}`;
-    swatch.style.setProperty("--level-colour", style.colour);
+    swatch.style.setProperty("--level-colour", `var(${style.cssVariable})`);
     swatch.setAttribute("aria-hidden", "true");
 
     const text = document.createElement("span");
@@ -861,7 +861,8 @@ async function start(): Promise<void> {
   elements.routeCancel.addEventListener("click", () => routeFlow.cancel());
 
   map.on("load", () => {
-    handles = installOverlays(map);
+    // Task 8 replaces this literal with the live theme.
+    handles = installOverlays(map, "dark");
 
     void riskPromise.then((result) => {
       if (result instanceof Error) {

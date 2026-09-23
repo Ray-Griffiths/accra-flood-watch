@@ -66,7 +66,7 @@ export function describeResult(result: PlaceResult): ResultBadge {
   }
 
   const style = levelStyle(result.level);
-  return { text: style.label, tone: "level", colour: style.colour, level: result.level };
+  return { text: style.label, tone: "level", colour: `var(${style.cssVariable})`, level: result.level };
 }
 
 export class PlaceSearch {

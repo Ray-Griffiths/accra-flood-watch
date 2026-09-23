@@ -84,8 +84,8 @@ export class DetailSheet {
 
     this.body.replaceChildren(
       terrain
-        ? this.heading(style.label, style.colour, detail.susceptibility, "Terrain score")
-        : this.heading(style.label, style.colour, detail.score, "Risk score"),
+        ? this.heading(style.label, `var(${style.cssVariable})`, detail.susceptibility, "Terrain score")
+        : this.heading(style.label, `var(${style.cssVariable})`, detail.score, "Risk score"),
       this.explanation(detail),
       // Reports are observations of the world, not model output, so they are
       // shown in both views. Somebody standing in water is worth knowing about
