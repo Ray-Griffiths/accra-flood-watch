@@ -1037,14 +1037,22 @@ Resources:
           VAPID_PRIVATE_PARAMETER: !Sub "/${AWS::StackName}/vapid/private"
           VAPID_SUBJECT: !Ref VapidSubject
       Policies:
-        # Query to read the grid, BatchWriteItem to write it back. Not
+        # Query to read the grid, BatchWriteItem to write it back, GetItem for
+        # the single `#meta` row that records the last run. Not
         # DynamoDBCrudPolicy, which would also grant DeleteItem, UpdateItem and
-        # Scan: this function rewrites all 1,140 cells every hour and should
-        # not be able to remove any of them.
+        # Scan: this function rewrites the whole grid and should not be able to
+        # remove any of it.
+        #
+        # GetItem was missing when the adaptive cadence shipped, and the failure
+        # was invisible in exactly the way that matters: `loadLastRun` swallows
+        # its error and reports "no previous run", so every fifteen-minute tick
+        # did a full rescore. It failed in the safe direction -- the city kept
+        # being scored -- while silently costing four times the writes.
         - Statement:
             - Effect: Allow
               Action:
                 - dynamodb:Query
+                - dynamodb:GetItem
                 - dynamodb:BatchWriteItem
               Resource: !GetAtt RiskCellsTable.Arn
         # Reports are read to score them and never written by this function.

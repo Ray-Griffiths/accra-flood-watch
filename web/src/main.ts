@@ -80,6 +80,18 @@ let currentReports: FloodReport[] = [];
 let currentCells: RiskCell[] = [];
 let refreshTimer: number | undefined;
 let pollTimer: number | undefined;
+/**
+ * A shared place waiting for its cell to arrive.
+ *
+ * `?at=` flies the map somewhere that is almost never inside the OPENING
+ * viewport, so the cells needed to open the detail sheet have not been
+ * fetched when the link is first handled. Holding the point until a refresh
+ * brings its cell in is what makes a shared link actually land on the reading
+ * it was sent to show -- which is the entire payload of sharing one.
+ */
+let pendingShare: [number, number] | null = null;
+/** Set once the shell is built, so a background refresh can open the sheet. */
+let sharedSheet: DetailSheet | null = null;
 /** Cells the server says residents have confirmed since the last scoring run. */
 let confirmedByReports = new Set<string>();
 
@@ -281,6 +293,8 @@ async function refreshForViewport(): Promise<void> {
     lastRisk = risk.value;
     describeRisk(risk.value);
     applyViewDecision();
+    // A shared link flew the map here; its cell has just arrived.
+    if (sharedSheet) resolvePendingShare(sharedSheet);
   } else {
     // Degrade readably: keep whatever is already drawn and say it is stale,
     // rather than blanking a map somebody may be using to decide a route.
@@ -292,6 +306,30 @@ async function refreshForViewport(): Promise<void> {
       "error",
     );
   }
+}
+
+/**
+ * Open the detail sheet for a shared place, once its cell is on screen.
+ *
+ * Gives up quietly if the point turns out to have no cell -- a link to ground
+ * outside coverage should still take you there and show the pin, rather than
+ * failing visibly.
+ */
+function resolvePendingShare(sheet: DetailSheet): void {
+  if (!pendingShare) return;
+
+  const [lon, lat] = pendingShare;
+  const match = currentCells.find(
+    (cell) =>
+      lon >= cell.bounds.west &&
+      lon <= cell.bounds.east &&
+      lat >= cell.bounds.south &&
+      lat <= cell.bounds.north,
+  );
+  if (!match) return;
+
+  pendingShare = null;
+  openDetailFor(match.cell, sheet);
 }
 
 /**
@@ -515,14 +553,10 @@ function applyIntent(
     const [lon, lat] = intent.at;
     handles.setSearchPin({ longitude: lon, latitude: lat, title: "Shared place" });
 
-    const match = currentCells.find(
-      (cell) =>
-        lon >= cell.bounds.west &&
-        lon <= cell.bounds.east &&
-        lat >= cell.bounds.south &&
-        lat <= cell.bounds.north,
-    );
-    if (match) openDetailFor(match.cell, detailSheet);
+    // Parked rather than resolved here: the flight above changes the
+    // viewport, and the cells for where it lands have not been fetched yet.
+    pendingShare = [lon, lat];
+    resolvePendingShare(detailSheet);
   }
 
   if (intent.action === "report") openReport();
@@ -722,6 +756,7 @@ async function start(): Promise<void> {
     (detail) => renderWatchSection(detail, config.pushPublicKey, support),
     (detail) => void sharePlace(detail.centre),
   );
+  sharedSheet = detailSheet;
 
   const reportFlow = new ReportFlow(
     elements.reportSheet,

@@ -1846,3 +1846,58 @@ no vertical budget left.
 - `sam validate --lint` valid, `npm run build` succeeds
 - 390x844 measured with three toggles and in all three languages: no scroll,
   0 console errors
+
+### Deployed
+
+Health 200 before, between and after. The public URL was never interrupted.
+
+Verified live: open data served (1.9MB GeoJSON, 553KB JSON, README, all at
+`max-age=86400` rather than the immutable year the hashed assets get); PWA
+shortcuts in the manifest; `levelLater`/`scoreLater` on every cell; the
+language picker with all three locales; a shared `?at=` link flying, pinning,
+opening the reading and clearing the URL; no scroll at 390x844 with three
+toggles; 0 console errors.
+
+**The clearing asymmetry, end to end against production:**
+
+| step | result |
+|---|---|
+| two knee-deep reports | `confirmed` |
+| one clear | still `confirmed` |
+| two clears | still `confirmed` |
+| three clears | `cleared` |
+| water reported after the clears | **`confirmed` again** |
+
+The flood history row for that cell was exactly `{cell, day, expiresAt}` — and
+three flooding reports on one day produced **one** row, so a street with one
+loud reporter is indistinguishable from one with twenty quiet ones. All six
+test reports and the history row were deleted afterwards; the two genuine
+community reports were left alone.
+
+### Two bugs caught by deploying, not by testing
+
+**The adaptive cadence was silently disabled in production.**
+`ScoreRiskFunction` had `Query` and `BatchWriteItem` on RiskCells but not
+`GetItem`, so `loadLastRun` hit `AccessDeniedException` on every invocation.
+It swallows its error and reports "no previous run", which resolves towards
+rescoring — so the city kept being scored correctly while every fifteen-minute
+tick did a full rewrite of 5,100 cells. Four times the intended writes, and
+invisible from the outside: health was green, the map was current, and the
+only symptom was a line in a log nobody had reason to read.
+
+Failing towards running was the right call and it is what made this a cost bug
+rather than an outage. But it is worth recording that "fail safe" and "fail
+visible" are different properties, and this had only the first. Granted
+`GetItem`; the next ticks logged `Skipped rescore: dry: 30 of 55 minutes
+elapsed` and `45 of 55`, which is the feature finally doing its job.
+
+**A shared link opened the map but not the reading.** `applyIntent` matched
+the shared point against `currentCells`, which at that moment holds the
+OPENING viewport — and a shared place is almost never inside it, because the
+link's whole purpose is to take you somewhere else. The pin and the flight
+worked, so it looked fine; the detail sheet, which is the entire payload of
+sharing a place, silently never opened. The point is now parked and resolved
+on the first refresh whose cells contain it.
+
+Both are the same shape of mistake: verified locally, where the opening
+viewport happened to contain the test point and where IAM is not enforced.
