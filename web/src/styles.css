@@ -94,6 +94,15 @@
   /* Keeps the dock clear of the iOS home indicator and Android gesture bar,
      where it would otherwise be unpressable. */
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* How much of the bottom edge the disclaimer occupies, and therefore the
+     floor every other bottom-anchored overlay sits above. Measured: three
+     lines of 12px plus its padding is 65px at 390px wide, four lines is 81px
+     on a 360px phone. 84px covers the narrow case with a little air.
+     The disclaimer is the one thing here that may never be covered, so this
+     is deliberately generous, and it lives in one place so the segments and
+     the dock cannot drift apart from it. */
+  --legal-reserve: 84px;
 }
 
 :root[data-theme="light"] {
@@ -189,11 +198,64 @@ body {
 
 /* ---------------------------------------------------------------- overlays */
 
-/* Everything above the map floats. Geometry -- which edge each one is pinned
-   to -- belongs to the next task; this file says only what they look like. */
+/* Everything above the map floats. Nothing here participates in flow, which
+   is what makes it impossible for a band to grow and push the page into
+   scrolling -- the failure this layout replaced. */
 .ov {
   position: absolute;
   z-index: 2;
+}
+
+/*
+ * Measured at 390x844 against the longest real copy in every view, then
+ * checked with docs/evidence/verify-layout.js. The control column clears the
+ * TALLEST state of the reading card, not the current one -- the terrain
+ * sentence runs to three lines and the tagline is allowed to wrap beneath it.
+ */
+.ov-read {
+  top: 14px;
+  left: 12px;
+  right: 12px;
+}
+
+.ov-tools {
+  top: 156px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+/*
+ * The segments sit ABOVE the dock rather than beside it. Measured at 390x844:
+ * the three toggles come to 247px and the dock to 141px, which is 388px of
+ * content for 366px of room -- they overlapped by 22px on the first real
+ * render. The dock keeps the lower band because it is the half of this pair
+ * that gets pressed, under time pressure, with a wet thumb.
+ *
+ * 113px is the dock's own height plus a 12px gap.
+ */
+.ov-seg {
+  left: 12px;
+  bottom: calc(var(--legal-reserve) + 113px);
+  display: flex;
+}
+
+.ov-dock {
+  right: 12px;
+  bottom: var(--legal-reserve);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.ov-legal {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 8px 14px calc(8px + var(--safe-bottom));
 }
 
 /* ------------------------------------------------------------ reading card */
@@ -558,12 +620,16 @@ body {
 
 /* ------------------------------------------------------------------ search */
 
-/* Anchored into the tools column. Geometry belongs to the next task; this is
-   the skin. */
+/*
+ * Collapsed to an icon until tapped. At full width it takes exactly the room
+ * the reading card needs, and searching is a deliberate act -- unlike reading
+ * the card, which is what the screen is for.
+ *
+ * `position: relative` because the results panel hangs off it absolutely
+ * rather than pushing the tools column around when it opens.
+ */
 .search {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  position: relative;
 }
 
 /* The label is for screen readers; the placeholder and icon carry it visually.
@@ -579,44 +645,91 @@ body {
   white-space: nowrap;
 }
 
+/* 46px square collapsed, matching the theme button beneath it so the tools
+   column reads as one control stack rather than two sizes of thing. */
 .search__field {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 8px 0 11px;
+  width: 46px;
+  height: 46px;
+  padding: 0;
   background: var(--surface);
   border: 1px solid var(--edge);
   border-radius: var(--radius);
   box-shadow: var(--lift);
+  overflow: hidden;
+  /*
+   * The width change is deliberately NOT transitioned. Animating width and
+   * padding relayouts this box and the flex column holding it on every frame,
+   * on the mid-range Android this app is built for -- the design detector
+   * flags it as layout thrash and it is right to. The field snaps open and the
+   * text fades in behind it, which costs one composited property instead of
+   * eleven frames of layout.
+   */
 }
 
 .search__icon {
+  width: 46px;
   flex: none;
+  text-align: center;
   font-size: 19px;
   line-height: 1;
-  color: var(--ink-2);
+  color: var(--ink);
 }
 
 .search__input {
   flex: 1;
-  /* 44px: a thumb target, outdoors, in rain. */
-  min-height: 44px;
   min-width: 0;
-  border: none;
+  border: 0;
+  outline: 0;
   background: transparent;
-  font-family: inherit;
+  color: var(--ink);
+  font: inherit;
   /* 16px exactly. Any smaller and iOS Safari zooms the whole page on focus,
      which on this layout means the map is suddenly off screen. */
   font-size: 16px;
-  color: var(--ink);
+  opacity: 0;
+  transition: opacity 0.14s ease;
 }
 
 .search__input:focus {
   outline: none;
 }
 
-.search__field:focus-within {
+/*
+ * Open while anything in the form holds focus, and while the results are up.
+ *
+ * Keying this to the FIELD's own `:focus-within` was not enough. Tapping a
+ * result moves focus out of the input, so the field collapsed at the moment
+ * the finger was coming down on the list -- a 320px layout shift under a
+ * moving thumb, which is how a tap lands on the wrong street.
+ */
+.search:focus-within .search__field,
+.search:has(.search__results:not([hidden])) .search__field {
+  width: calc(100vw - 24px);
+  padding-right: 8px;
   border-color: var(--ink-2);
+}
+
+.search:focus-within .search__input,
+.search:has(.search__results:not([hidden])) .search__input {
+  opacity: 1;
+}
+
+/* The results panel is absolutely positioned and lands squarely on top of the
+   theme button and the language select. Hiding them rather than letting them
+   sit underneath keeps them out of the tab order too, so focus cannot move to
+   a control that is not on screen. They come back when the list closes. */
+.ov-tools:has(.search__results:not([hidden])) .tool,
+.ov-tools:has(.search__results:not([hidden])) .language {
+  visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search__input {
+    transition: none;
+  }
 }
 
 /* Cancel the browser's own search affordance so there are not two X buttons. */
@@ -637,8 +750,15 @@ body {
   cursor: pointer;
 }
 
+/* Hangs off the field rather than sitting under it in flow, so opening the
+   list cannot move the theme button or the language select out from under a
+   thumb that is already on its way to them. */
 .search__results {
-  max-height: 46vh;
+  position: absolute;
+  top: 54px;
+  right: 0;
+  width: calc(100vw - 24px);
+  max-height: 50vh;
   overflow-y: auto;
   padding: 5px;
   background: var(--surface-solid);
@@ -1144,6 +1264,92 @@ body {
 .button--secondary {
   background: transparent;
   color: var(--ink);
+}
+
+/* --------------------------------------------------------------- desktop */
+
+/* At laptop width the phone dock stranded at the bottom of a wide screen is
+   the wrong answer. The rail becomes a column and the map takes the rest.
+   Deliberately one breakpoint and no more -- the phone is the case that
+   matters. */
+@media (min-width: 900px) {
+  .stage {
+    display: grid;
+    grid-template-columns: 344px 1fr;
+    /* Pack the sidebar at the top. Without this the auto rows share the
+       leftover height between them and the cards drift apart down a 900px
+       window. */
+    align-content: start;
+    row-gap: 14px;
+  }
+
+  /*
+   * The map stays absolutely positioned rather than becoming a grid item.
+   * `grid-column: 2; grid-row: 1 / -1` looks like the obvious way to make it
+   * span the sidebar, and it does not work: `-1` counts only EXPLICIT row
+   * tracks, and this grid declares none, so the map spanned row one and
+   * rendered 151px tall beside a 730px sidebar. An absolutely positioned
+   * child is not a grid item at all, so there is no row to be trapped in.
+   */
+  .map {
+    inset: 0 0 0 344px;
+  }
+
+  .ov,
+  .rail {
+    position: static;
+    transform: none;
+    grid-column: 1;
+    width: auto;
+    box-shadow: none;
+  }
+
+  /* `margin-inline`, not `margin: 0 22px` -- the shorthand would reset the
+     top and bottom margins that give the column its ends, and it sits above
+     them in source order. */
+  .stage > .ov,
+  .stage > .rail {
+    grid-column: 1;
+    margin-inline: 22px;
+  }
+
+  /* The stage itself carries no padding, so that the map can fill the window
+     edge to edge; the sidebar's own ends provide the breathing room. */
+  .ov-read {
+    margin-top: 18px;
+  }
+
+  .ov-tools {
+    align-items: stretch;
+  }
+
+  /* The field has a column of its own now, so it has no reason to take over
+     the viewport -- and `calc(100vw - 24px)` inside a 344px sidebar would
+     simply overflow it. */
+  .search__field,
+  .search__field:focus-within {
+    width: 100%;
+  }
+
+  .search__input {
+    opacity: 1;
+  }
+
+  .search__results {
+    position: static;
+    width: auto;
+  }
+
+  /* In a column of its own the list pushes the controls below it rather than
+     covering them, so there is nothing hidden and nothing to un-focus. */
+  .ov-tools:has(.search__results:not([hidden])) .tool,
+  .ov-tools:has(.search__results:not([hidden])) .language {
+    visibility: visible;
+  }
+
+  .ov-legal {
+    margin-bottom: 18px;
+  }
 }
 
 /* --------------------------------------------------------------- a11y */
