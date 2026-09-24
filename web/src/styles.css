@@ -1732,7 +1732,9 @@ body {
      sidebar is beside it -- so the controls go back to the corner they
      conventionally live in. */
   .maplibregl-ctrl-top-right {
-    top: 0;
+    /* The map starts immediately below the navbar. A small inset keeps the
+       zoom and locate controls from reading as attached to that chrome. */
+    top: 14px;
     transform: none;
   }
 
@@ -1768,6 +1770,42 @@ body {
   .ov-read__facts {
     display: block;
     margin-top: 4px;
+  }
+}
+
+/* A 1366x768 laptop has far less vertical room than the 900px-high desktop
+ * composition above. The reading facts are supplementary desktop detail, so
+ * return them to their phone treatment before they can force the controls or
+ * safety disclaimer below the clipped map stage. The core reading, legend,
+ * view toggle, actions, and disclaimer remain visible without page scrolling.
+ */
+@media (min-width: 900px) and (max-height: 850px) {
+  .stage {
+    gap: 10px;
+  }
+
+  .ov-read__facts {
+    display: none;
+  }
+
+  /* The short legend names retain the risk vocabulary in a compact sidebar;
+     the explanatory sentences remain available to screen readers. */
+  .legend__item {
+    align-items: center;
+    padding: 4px 2px;
+  }
+
+  .legend__text span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    margin-top: 0;
+  }
+
+  .ov-legal {
+    margin-bottom: 12px;
   }
 }
 
