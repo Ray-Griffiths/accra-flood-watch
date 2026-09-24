@@ -219,11 +219,31 @@ git commit -m "Add theme resolution that keeps following the system until chosen
 - Modify: `web/src/patterns.ts`
 - Modify: `web/src/map.ts`
 - Modify: `web/src/main.ts`
+- Modify: `web/src/detail.ts` — emits `var(--k-…)` into `heading()`
+- Modify: `web/src/search.ts` — emits `var(--k-…)` into the result badge
 - Test: `web/src/levels.test.ts` (create)
 
 **Interfaces:**
 - Consumes: `Theme` from Task 1.
-- Produces: `interface ThemeColour { light: string; dark: string }`; `LevelStyle.colour: ThemeColour`; `colourFor(style: LevelStyle, theme: Theme): string`; `matchByView<T>(view: MapView, pick: (s: LevelStyle) => T, fallback: T): unknown[]` (unchanged signature); `registerRiskPatterns(map: MapLibreMap, theme: Theme): void`; `installOverlays(map: MapLibreMap, theme: Theme): MapHandles`; `MapHandles.setTheme(theme: Theme): void`.
+- Produces: `interface ThemeColour { light: string; dark: string }`; `LevelStyle.colour: ThemeColour`; `LevelStyle.cssVariable: string`; `colourFor(style: LevelStyle, theme: Theme): string`; `matchByView<T>(view: MapView, pick: (s: LevelStyle) => T, fallback: T): unknown[]` (unchanged signature); `registerRiskPatterns(map: MapLibreMap, theme: Theme): void`; `installOverlays(map: MapLibreMap, theme: Theme): MapHandles`; `MapHandles.setTheme(theme: Theme): void`.
+
+**Amended after implementation found a gap.** `style.colour` has **five** consumers, not
+three: `detail.ts:87-88` and `search.ts:69` were missed. They split by whether the consumer
+can read CSS.
+
+*Cannot read CSS, so they take a `Theme`:* `map.ts` (four paint sites) and `patterns.ts`
+(canvas draw).
+
+*Ends up in CSS anyway, so it takes no `Theme`:* `main.ts` `renderLegend`, `search.ts`
+`describeResult`, and `detail.ts` `heading()` all funnel into the `--level-colour` custom
+property. These emit **`var(--k-…)`**, not a hex, and CSS resolves the theme. Consequently
+the `activeTheme` / `currentTheme()` placeholder that an earlier draft of this task added to
+`main.ts` is **not** wanted — do not add it, and Task 8 no longer has to replace it.
+
+Add `cssVariable` to every style: `low: "--k-low"`, `watch: "--k-watch"`, `high: "--k-high"`,
+`confirmed: "--k-flood"`, `floods-first: "--k-first"`, `floods-heavy: "--k-heavy"`,
+`usually-dry: "--k-dry"`. The three DOM consumers then set
+`` `var(${style.cssVariable})` `` where they previously set `style.colour`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -472,34 +492,34 @@ and in the returned object:
     },
 ```
 
-- [ ] **Step 7: Fix `main.ts`**
+- [ ] **Step 7: Point the three DOM consumers at the token**
 
-Find `renderLegend` (around line 147). Change the swatch colour line:
+None of these takes a `Theme`. They name a variable and let CSS decide, which is why an
+open sheet cannot hold a stale colour across a switch.
 
-```ts
-    swatch.style.setProperty("--level-colour", colourFor(style, currentTheme()));
-```
-
-Add to the imports at the top of `main.ts`:
+`main.ts`, in `renderLegend` (around line 157):
 
 ```ts
-import { colourFor } from "./levels.ts";
+    swatch.style.setProperty("--level-colour", `var(${style.cssVariable})`);
 ```
 
-Add a module-level accessor near the other module state, which Task 8 will wire to the real value:
+`search.ts`, in `describeResult` (around line 69):
 
 ```ts
-/** Replaced by the live value in Task 8; a single source keeps the legend, the
- *  patterns and the paint from ever disagreeing about which theme is on. */
-let activeTheme: Theme = "dark";
-function currentTheme(): Theme {
-  return activeTheme;
-}
+  return { text: style.label, tone: "level", colour: `var(${style.cssVariable})`, level: result.level };
 ```
 
-with `import type { Theme } from "./theme.ts";`
+`detail.ts` (around lines 87-88) — pass the variable reference through to `heading()`,
+whose `colour: string` parameter needs no signature change:
 
-Update the `installOverlays` call site to pass the theme.
+```ts
+        ? this.heading(style.label, `var(${style.cssVariable})`, detail.susceptibility, "Terrain score")
+        : this.heading(style.label, `var(${style.cssVariable})`, detail.score, "Risk score"),
+```
+
+Then update the `installOverlays` call site in `main.ts` to pass a theme. Until Task 8
+wires the real value, pass the literal `"dark"` at that one call site — do **not** add a
+module-level `activeTheme` or a `currentTheme()` accessor.
 
 - [ ] **Step 8: Verify everything is green**
 
@@ -512,7 +532,7 @@ Expected: all tests pass, typecheck clean, build succeeds.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add web/src/levels.ts web/src/levels.test.ts web/src/patterns.ts web/src/map.ts web/src/main.ts
+git add web/src/levels.ts web/src/levels.test.ts web/src/patterns.ts web/src/map.ts web/src/main.ts web/src/detail.ts web/src/search.ts
 git commit -m "Give the risk ramp a light and a dark pair"
 ```
 
@@ -557,12 +577,20 @@ cp node_modules/@fontsource/atkinson-hyperlegible-next/files/atkinson-hyperlegib
 
 - [ ] **Step 2: Declare the faces**
 
-At the very top of `web/src/styles.css`, above the existing `@import "maplibre-gl/dist/maplibre-gl.css";`:
+**Corrected.** An earlier draft of this step put the `@font-face` block *above* the
+existing `@import "maplibre-gl/dist/maplibre-gl.css";` and justified it with a backwards
+reading of the spec. CSS requires `@import` to come **first** — before every rule except
+`@charset` and `@layer` — so `@font-face` above it invalidates the import. Vite happens to
+inline the import at build time, which hides the mistake in production, but the source
+should not depend on a bundler to rescue invalid CSS.
+
+Put the `@font-face` block **immediately below** the existing `@import` line:
 
 ```css
 /*
  * Self-hosted Latin subsets, 76 KB total, served from this distribution behind
- * the same long cache as everything else.
+ * the same long cache as everything else. Declared below the `@import` above,
+ * because CSS requires `@import` to precede every rule but `@charset`/`@layer`.
  *
  * This supersedes the system-fonts-only rule in CLAUDE.md, under conditions:
  * `swap` plus a metric-ish system fallback means text paints immediately in a
@@ -637,13 +665,191 @@ The page will look wrong after this task and correct after Task 5. That is expec
 
 **Files:**
 - Modify: `web/index.html`
+- Create: `web/src/shell.test.ts`
 - Create: `docs/evidence/verify-layout.js`
 
 **Interfaces:**
 - Consumes: nothing.
 - Produces: DOM structure `.stage > #map`, overlays `.ov-read`, `.ov-tools`, `.rail`, `.ov-seg`, `.ov-dock`, `.ov-legal`; a theme button `#theme-toggle` with `.tool__moon` / `.tool__sun` children, consumed by Task 8.
 
-- [ ] **Step 1: Write the contract check**
+- [ ] **Step 1: Write the DOM contract test**
+
+`main.ts` and the sheet modules reach into the DOM with 26 `querySelector(...)!`
+calls. The non-null assertion means TypeScript cannot catch a renamed or dropped
+node — it fails at runtime, in the browser, as a blank screen. A static test over
+`index.html` catches it in `npm test` instead, and keeps catching it.
+
+Create `web/src/shell.test.ts` (this is the shipped file, copied verbatim — four assertions in it were rewritten during review after each passed on markup that had moved elsewhere, so `scopeOf` now takes both bounds at once):
+
+```ts
+/**
+ * The DOM contract between index.html and the TypeScript that reaches into it.
+ *
+ * Every selector below is used with a non-null assertion somewhere in the app,
+ * so a missing node is not a type error -- it is a blank screen. Restructuring
+ * the shell is exactly when one gets dropped, which is why this is a test and
+ * not a checklist.
+ */
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { describe, it } from "node:test";
+
+const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+
+/**
+ * The markup between an opening anchor and its closing tag.
+ *
+ * Every structural check here needs BOTH bounds. Four assertions in this file
+ * have shipped with a start and no end, each passing happily on markup that had
+ * moved elsewhere -- so the bound is taken once, here, rather than remembered
+ * correctly at each call site.
+ */
+function scopeOf(openAnchor: string, closeTag: string): string {
+  const start = HTML.indexOf(openAnchor);
+  assert.notEqual(start, -1, `index.html no longer contains ${openAnchor}`);
+  const end = HTML.indexOf(closeTag, start);
+  assert.notEqual(end, -1, `${openAnchor} is not closed by ${closeTag}`);
+  return HTML.slice(start, end);
+}
+
+/** ids reached for by id. */
+const IDS = [
+  "status", "tagline", "map", "legend", "search", "search-input", "search-results",
+  "language-select", "view-reason", "route-button", "route-prompt", "route-cancel",
+  "report-button", "detail-sheet", "route-sheet", "report-sheet", "theme-toggle",
+];
+
+/** class tokens reached for by class. */
+const CLASSES = [
+  "search__input", "search__clear", "search__results", "language",
+  "view-bar", "view-toggle__option", "route-prompt__text",
+  "report-button__label", "sheet__body", "sheet__close", "disclaimer",
+  "rail__cap",
+];
+
+describe("shell DOM contract", () => {
+  for (const id of IDS) {
+    it(`keeps #${id}`, () => {
+      assert.ok(
+        new RegExp(`id="${id}"`).test(HTML),
+        `index.html no longer defines id="${id}" -- main.ts asserts it exists`,
+      );
+    });
+  }
+
+  for (const cls of CLASSES) {
+    it(`keeps .${cls}`, () => {
+      // \\b (not \b): inside a template literal, an unescaped \b is the
+      // backspace-character escape, not a regex word-boundary token -- it
+      // would compile to a pattern that can never match anything in HTML.
+      assert.ok(
+        new RegExp(`class="[^"]*\\b${cls}\\b[^"]*"`).test(HTML),
+        `index.html no longer defines .${cls} -- the app asserts it exists`,
+      );
+    });
+  }
+
+  it("keeps a data-view button for each of the three views", () => {
+    for (const view of ["now", "later", "terrain"]) {
+      assert.ok(
+        new RegExp(`data-view="${view}"`).test(HTML),
+        `missing data-view="${view}"`,
+      );
+    }
+  });
+
+  it("keeps .report-button__label inside #report-button", () => {
+    const scope = scopeOf('id="report-button"', "</button>");
+    assert.ok(
+      scope.includes("report-button__label"),
+      "main.ts selects '#report-button .report-button__label'; it must be a descendant",
+    );
+  });
+
+  it("keeps a body and close button inside every sheet", () => {
+    for (const id of ["detail-sheet", "route-sheet", "report-sheet"]) {
+      const start = HTML.indexOf(`id="${id}"`);
+      assert.notEqual(start, -1, `missing #${id}`);
+      // Bound the slice to this sheet's own block. A fixed-size window bled into
+      // the NEXT sheet, so a sheet that had lost its body still passed on its
+      // neighbour's markup -- the assertion protected only the last sheet.
+      const next = HTML.indexOf('id="', start + 1);
+      const scope = HTML.slice(start, next === -1 ? HTML.length : next);
+      assert.ok(scope.includes("sheet__body"), `#${id} has no .sheet__body`);
+      assert.ok(scope.includes("sheet__close"), `#${id} has no .sheet__close`);
+    }
+  });
+
+  it("keeps rail__cap a sibling of #legend, not a child", () => {
+    // renderLegend calls replaceChildren on #legend, so a cap nested inside it
+    // would be wiped on the first risk response rather than merely misplaced.
+    const legend = scopeOf('id="legend"', "</section>");
+    assert.ok(
+      !legend.includes("rail__cap"),
+      "rail__cap must be a sibling of #legend -- replaceChildren would wipe it",
+    );
+
+    const rail = scopeOf('class="rail"', "</div>");
+    assert.ok(rail.includes('id="legend"'), "#legend must sit inside .rail");
+    assert.ok(rail.includes("rail__cap"), "rail__cap must sit inside .rail");
+    assert.ok(
+      rail.indexOf("rail__cap") > rail.indexOf('id="legend"'),
+      "rail__cap must come after #legend inside .rail",
+    );
+  });
+
+  it("keeps the disclaimer pointing at NADMO and GMet", () => {
+    // Scoped to the element, not the file: matching anywhere would still pass
+    // if this text survived only in a comment. It is a safety requirement.
+    const scope = scopeOf('class="ov ov-legal disclaimer"', "</footer>");
+    assert.match(scope, /NADMO/, "the disclaimer must name NADMO");
+    assert.match(scope, /Meteorological/, "the disclaimer must name GMet");
+    assert.match(
+      scope,
+      /not an official warning service/i,
+      "the disclaimer must say this is not an official warning service",
+    );
+  });
+});
+```
+
+**Corrected after review.** The first draft of the sheet check sliced a fixed
+600-character window from each `id="..."`. Each sheet block is only about 290
+characters, so the window ran into the NEXT sheet and a sheet that had lost its
+body still passed on its neighbour's markup — only the last sheet was ever
+protected. Proven by gutting `route-sheet` and watching the old test pass. Bound
+every such slice to its own element. The sibling test below was added at the same
+time: `renderLegend` calls `replaceChildren` on `#legend`, so a cap nested inside
+it would vanish on the first risk response.
+
+**Corrected after review.** The first draft of the sheet check sliced a fixed
+600-character window from each `id="..."`. Each sheet block is only about 290
+characters, so the window ran into the NEXT sheet and a sheet that had lost its
+body still passed on its neighbour's markup — only the last sheet was ever
+protected. Proven by gutting `route-sheet` and watching the old test pass. Bound
+every such slice to its own element. The sibling test below was added at the same
+time: `renderLegend` calls `replaceChildren` on `#legend`, so a cap nested inside
+it would vanish on the first risk response.
+
+Run it against the CURRENT `index.html` before changing anything:
+
+```bash
+cd web && npm test
+```
+
+Expected: `#theme-toggle` FAILS (it does not exist yet) and everything else passes.
+That failure is your RED — it proves the test can actually detect a missing node.
+
+If any other check fails, the test is wrong rather than the markup. Say so and
+fix the test before going further: a contract test that fails for its own
+reasons proves nothing about the contract it claims to protect.
+
+If other checks fail too, the test is wrong rather than the markup. Say so and fix
+the test first: a contract test that fails for its own reasons proves nothing
+about the contract.
+
+- [ ] **Step 2: Write the browser contract check**
 
 Create `docs/evidence/verify-layout.js`. This is pasted into the browser console — it is not part of the bundle:
 
@@ -700,7 +906,7 @@ Create `docs/evidence/verify-layout.js`. This is pasted into the browser console
 })();
 ```
 
-- [ ] **Step 2: Replace the body of `web/index.html`**
+- [ ] **Step 3: Replace the body of `web/index.html`**
 
 Keep `<head>` exactly as Task 3 left it. Replace everything from `<body>` to `</body>` with:
 
@@ -832,24 +1038,33 @@ Keep `<head>` exactly as Task 3 left it. Replace everything from `<body>` to `</
 
 Note two deliberate carry-overs: `.view-bar` stays as a class on the segment overlay because `main.ts` toggles `view-bar--overridden` on it, and `#view-reason` moves into the reading card because it is the sentence the card exists to show.
 
-- [ ] **Step 3: Run the contract check**
+- [ ] **Step 4: Run the contract checks**
 
 ```bash
 cd web && npm run dev
 ```
 
-At 390×844 in devtools, paste `docs/evidence/verify-layout.js` into the console.
+First the committable one:
 
-Expected at this stage: `missingSelectors: []`. The `overlaps` and `pageScrolls` fields will still fail — Task 6 fixes those. If any selector is missing, fix the markup before continuing; a missing selector is a runtime crash in `main.ts`.
+```bash
+cd web && npm test
+```
 
-- [ ] **Step 4: Confirm the app still functions**
+Expected: the whole `shell DOM contract` suite passes, including `#theme-toggle`.
+This is the gate for this task.
+
+Then, if a browser is available, paste `docs/evidence/verify-layout.js` into the
+console at 390×844 for the layout half. Expected at this stage:
+`missingSelectors: []`. The `overlaps` and `pageScrolls` fields will still fail — Task 6 fixes those. If any selector is missing, fix the markup before continuing; a missing selector is a runtime crash in `main.ts`.
+
+- [ ] **Step 5: Confirm the app still functions**
 
 With the dev server running, click a risk cell, open the report sheet, and switch views. All three must work, however ugly the page looks.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add web/index.html docs/evidence/verify-layout.js
+git add web/index.html web/src/shell.test.ts docs/evidence/verify-layout.js
 git commit -m "Restructure the shell as a map stage with floating overlays"
 ```
 
@@ -896,6 +1111,18 @@ Replace the existing `:root { … }` block in `web/src/styles.css` with:
   --seg-on-bg: #334d5c;
   --seg-on-ink: #e8f1f5;
 
+  /* The risk ramp. These are read by the legend, the search badges and the
+     detail sheet, which emit `var(--k-…)` rather than a hex so CSS resolves
+     the theme for them. The same values live in levels.ts for the map, which
+     cannot read CSS -- contrast.test.ts asserts the two agree. */
+  --k-low: #5b8ca6;
+  --k-watch: #ffc53d;
+  --k-high: #ff7a1f;
+  --k-flood: #ff4530;
+  --k-first: #9a7bd6;
+  --k-heavy: #6b5896;
+  --k-dry: #2a3a45;
+
   --radius: 12px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
@@ -919,6 +1146,14 @@ Replace the existing `:root { … }` block in `web/src/styles.css` with:
   --seg-bg: rgba(255, 255, 255, 0.95);
   --seg-on-bg: #14323e;
   --seg-on-ink: #f2f7f9;
+
+  --k-low: #8fb0c4;
+  --k-watch: #e0a511;
+  --k-high: #e35d18;
+  --k-flood: #c8261a;
+  --k-first: #7c5ea6;
+  --k-heavy: #a291bf;
+  --k-dry: #ccd4d7;
 }
 ```
 
@@ -1166,6 +1401,28 @@ describe("theme contrast", () => {
     }
   }
 
+  /*
+   * The map reads hex from levels.ts; the legend, the search badges and the
+   * detail sheet read these tokens. Nothing but this test stops the legend
+   * drifting from the cells it claims to explain.
+   */
+  it("matches the ramp in levels.ts, in both themes", async () => {
+    const { LEVEL_STYLES, TERRAIN_STYLES } = await import("./levels.ts");
+    const all = { ...LEVEL_STYLES, ...TERRAIN_STYLES };
+    for (const style of Object.values(all)) {
+      assert.equal(
+        dark[style.cssVariable]?.toLowerCase(),
+        style.colour.dark.toLowerCase(),
+        `${style.cssVariable} dark`,
+      );
+      assert.equal(
+        light[style.cssVariable]?.toLowerCase(),
+        style.colour.light.toLowerCase(),
+        `${style.cssVariable} light`,
+      );
+    }
+  });
+
   it("defines every token in light that it defines in dark", () => {
     const missing = Object.keys(dark).filter((k) => !(k in light));
     assert.deepEqual(missing, [], `tokens missing from the light theme: ${missing.join(", ")}`);
@@ -1182,6 +1439,33 @@ cd web && npm test
 Expected: every pair PASSES. If one fails, darken the foreground token rather
 than lightening the ground — the grounds carry the theme's identity.
 
+- [ ] **Step 7: Clear the padding findings Task 4 could not answer**
+
+After Task 4 restructured the markup, the design detector reported three
+`cramped-padding` findings against `web/index.html`: children flush inside
+`.map`, inside `.view-toggle`, and inside `.sheet__panel`. Those were premature,
+not wrong — Task 4 was forbidden to touch the stylesheet, so the detector was
+judging new markup against the old CSS. This task owns the CSS, so it owns them.
+
+```bash
+cd /c/Users/PC/Desktop/AFW
+"C:/Users/PC/.claude/plugins/cache/impeccable/impeccable/4.3.1/skills/impeccable/scripts/impeccable" detect web/index.html --no-advisory
+```
+
+Each finding is either genuinely fixed by the new stylesheet or a container
+whose children legitimately sit flush. Resolve every one, and say in your report
+which of the two each was:
+
+- `.map` — its only child is the `<noscript>` fallback. That paragraph needs real
+  padding of its own; a full-bleed map container does not.
+- `.view-toggle` — the segments carry their own `padding: 9px 10px`, so the group
+  is a flush container by design.
+- `.sheet__panel` — the sheets keep their existing treatment; confirm the body
+  still has its inset and that the safe-area inset at the bottom survived.
+
+Do not suppress a finding to clear it. If one is a genuine false positive, say so
+in the report with the reason and leave it standing for the reviewer to judge.
+
 - [ ] **Step 7: Verify nothing references a deleted token**
 
 ```bash
@@ -1196,7 +1480,7 @@ npm run build
 
 Expected: build succeeds.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add web/src/styles.css web/src/contrast.test.ts
@@ -1443,7 +1727,9 @@ export function applyBasemapTheme(
 
 - [ ] **Step 3: Wire it up in `main.ts`**
 
-Replace the placeholder `activeTheme` from Task 2 with the real wiring. Add the imports:
+Task 2 left no placeholder to replace (see its amendment note); the legend, search badges
+and detail sheet already follow the theme through CSS. What is missing is the live value
+for the map. Add the imports:
 
 ```ts
 import { applyBasemapTheme, styleUrlForTheme } from "./map.ts";

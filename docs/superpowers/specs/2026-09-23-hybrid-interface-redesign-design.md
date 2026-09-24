@@ -203,15 +203,35 @@ judged compatible; relying on that is how a theme switch silently recentres the 
 `LEVEL_STYLES` in `levels.ts` currently carries a single `colour: string`. It becomes
 `colour: { light: string; dark: string }`, with a `colourFor(style, theme)` accessor.
 
-Three consumers must follow:
+There are **five** consumers, and they split into two kinds. An earlier draft of this
+document claimed three and named only the first kind; `detail.ts` and `search.ts` were
+missed, and the split below is the correction.
 
-- `patterns.ts` — `draw(kind, colour)` renders to canvas from `style.colour`. Patterns are
-  registered images and must be **redrawn and re-registered** on theme change, not just
-  repainted. `installOverlays` already calls `registerRiskPatterns`, so step 6.2.3 covers it.
-- `map.ts` — `matchByView(…, (s) => s.colour, …)` becomes theme-aware. The hard-coded
+**Needs a resolved hex, because it cannot read CSS** — these take a `Theme` parameter:
+
+- `patterns.ts` — `draw(kind, colour)` renders to a canvas. Patterns are registered images
+  and must be **redrawn and re-registered** on theme change, not just repainted.
+  `installOverlays` already calls `registerRiskPatterns`, so step 6.2.3 covers it.
+- `map.ts` — four sites build MapLibre paint expressions via `matchByView`. The hard-coded
   `"#2b83ba"` fallbacks become theme-aware too.
-- `main.ts` `renderLegend` — sets `--level-colour` from `style.colour`; takes the token
-  instead so the legend follows a CSS-only theme change without a re-render.
+
+**Ends up in CSS anyway** — these emit a *variable reference*, never a hex, and therefore
+need no theme parameter at all:
+
+- `main.ts` `renderLegend` sets `--level-colour`.
+- `search.ts` `describeResult` carries a colour into the same `--level-colour`.
+- `detail.ts` passes a colour into `heading()`.
+
+Each `LevelStyle` gains a `cssVariable` field (`--k-low`, `--k-watch`, `--k-high`,
+`--k-flood`, `--k-first`, `--k-heavy`, `--k-dry`). The three DOM consumers set
+`--level-colour: var(--k-low)` and CSS resolves the theme. This is strictly better than
+threading: an open detail sheet cannot hold a stale colour across a theme switch, because
+nothing in JavaScript decided the colour in the first place.
+
+The ramp therefore appears twice — as hex in `levels.ts` for the map, and as tokens in
+`styles.css` for the DOM. That duplication is forced by the boundary, so §9 carries a test
+asserting the two agree, which makes drift a test failure rather than a subtle mismatch
+between the legend and the map it describes.
 
 ### 6.4 Resolution and persistence
 
@@ -298,6 +318,9 @@ New:
   reachable from `colourFor`; the live ramp and the terrain ramp share no colour.
 - Contrast assertion over the token table: every ink/surface pair ≥ 4.5:1 in both themes.
   The preview shipped six genuine contrast failures that only surfaced when measured.
+- Ramp-parity assertion: every `--k-*` token in `styles.css` equals the corresponding
+  `colour[theme]` in `levels.ts`. The map reads the hex and the DOM reads the token, so
+  nothing but a test stops the legend drifting from the cells it explains.
 
 Browser verification, scripted rather than eyeballed — this caught every real bug in the
 preview and three of them were invisible in screenshots:
