@@ -1901,3 +1901,93 @@ on the first refresh whose cells contain it.
 
 Both are the same shape of mistake: verified locally, where the opening
 viewport happened to contain the test point and where IAM is not enforced.
+
+---
+
+## Day 6 — the hybrid interface redesign
+
+The stacked-band layout was replaced with a map-first layered one, in a new
+visual language, shipping both a light and a dark theme. Web only: no
+`sam deploy`, no `template.yaml` edit, no Lambda change. The stack was never
+in a half-migrated state because the stack was never touched.
+
+### What was attempted
+
+Nine tasks: a theme resolution module, a theme-aware risk ramp, self-hosted
+font subsets, a markup restructure, a token system, overlay geometry, map
+padding for occluded chrome, theme switching end to end, and this entry.
+
+### Three findings that only production could settle
+
+**Amazon Location serves a dark basemap from the same endpoint.**
+`color-scheme=Dark` on the style descriptor returns a genuinely different
+descriptor with the same 160 layers; `color-scheme=Light` is byte-identical to
+omitting the parameter. Verified against the live stack before any code
+depended on it.
+
+**`color-scheme` was already in the `TileCachePolicy` query-string whitelist.**
+That is what made the whole dark-basemap feature web-only: the two variants get
+separate cache keys instead of colliding, with no CloudFormation change. Had it
+not been whitelisted, this task would have needed a template edit and a deploy
+window, and it would have been cut.
+
+**`setStyle` drops every registered image, not just every source.** Repainting
+the risk layers after a theme switch is not enough — the hatch and dot patterns
+are images, and they have to be re-registered. `installOverlays` was already
+written to be callable twice, which is the only reason this was a one-line
+discovery rather than a redesign.
+
+### Two defects found by measuring rather than by reading
+
+**The contrast test's own luminance function was wrong.** It passed the blue
+channel through raw — `0.0722 * (n & 255)`, a 0–255 term summed against two
+0–1 ones — so blue swamped every result. It reported `--seg-on-ink` on
+`--seg-on-bg` as 2.75:1 when it is 12.5:1. The failure mode that matters is not
+the false alarm: the same bug would have passed genuinely illegible pairs. The
+function is now pinned to the published WCAG reference points (21:1 for black
+on white, 4.54:1 for `#767676` on white), so a regression in the instrument
+shows up before a regression in the palette.
+
+**A test asserting the light theme defines every token the dark one does could
+never fail.** The light map was built by spreading the dark one, so every dark
+key was present by construction. It now checks the light block's own keys, with
+an explicit allowlist for the two theme-neutral tokens, and a companion test
+that catches a token being wrongly listed as neutral. Each of these was proved
+by deleting a token and watching the test go red.
+
+### Two geometry bugs that a screenshot would not have shown
+
+**The segments and the dock overlapped by 22px.** The measured widths — 247px
+of toggles against a 141px dock — come to 388px of content for 366px of room.
+The design preview's numbers had been taken against shorter button text. The
+segments now sit above the dock, and both offsets derive from one
+`--legal-reserve` token so they cannot drift apart from the disclaimer.
+
+**`grid-row: 1 / -1` does not span implicit rows.** On desktop the map was
+given column two and told to span every row; `-1` counts only *explicit* row
+tracks, and the grid declared none, so the map rendered 151px tall beside a
+730px sidebar. The map is now absolutely positioned and is not a grid item at
+all, so there is no row for it to be trapped in.
+
+### Two interaction bugs found by driving the browser
+
+While the search results were open they covered the theme button and the
+language select, which remained in the tab order underneath — focus could land
+on a control that was not on screen. And keying the field's expansion to its
+own `:focus-within` meant that tapping a result collapsed the field at the
+moment the finger was coming down: a 320px layout shift under a moving thumb,
+which is how a tap lands on the wrong street. Both are fixed and both were
+invisible in a static render.
+
+### Verified in a real browser, both themes
+
+`docs/evidence/verify-layout.js` reports `PASS` at 390×844 in light and in
+dark: no missing selectors, no overlaps, no page scroll, disclaimer fully
+visible. Desktop at 1440×900 likewise. A theme switch moves the interface, the
+basemap and the risk ramp together, keeps the camera still, and leaves a drawn
+route and a search pin in place — both are dropped by `setStyle` and restored
+explicitly, because somebody who has just found a way around the water must not
+lose it by changing the colours. Zero console errors throughout.
+
+Screenshots: `docs/evidence/redesign-phone-dark-390x844.png`,
+`redesign-phone-light-390x844.png`, `redesign-desktop-dark-1440x900.png`.

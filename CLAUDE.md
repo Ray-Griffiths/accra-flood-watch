@@ -35,7 +35,7 @@ These were decided at project setup. Do not revisit without asking.
 |---|---|---|
 | Region | **`eu-west-1`** (Ireland) | Lowest practical latency to Accra (~90ms). `af-south-1` was rejected — it has no Amazon Location Service. |
 | Lambda runtime | **Node.js 22 + TypeScript** | Docker is not installed locally. SAM bundles TS with esbuild natively; `web-push` has zero native dependencies. Python's `cryptography` would have required Docker. |
-| Frontend | **Vite + vanilla TypeScript + MapLibre GL JS** | Serves the low-end-Android constraint. No framework runtime. |
+| Frontend | **Vite + vanilla TypeScript + MapLibre GL JS** | Serves the low-end-Android constraint. No framework runtime. Two self-hosted font subsets (Source Serif 4, Atkinson Hyperlegible Next), 76 KB total — see the UI rules for why this supersedes the original system-fonts-only position. |
 | IaC | **AWS SAM** (CloudFormation) | Per the plan. One template, one `sam deploy`. |
 | Public URL | **Default CloudFront domain** | No DNS risk on a tight deadline. A custom domain can be attached later without redeploying. |
 | Pilot area | **Circle / Kaneshie / Avenor** | Approx. bbox `-0.245, 5.550, -0.195, 5.590`. High-traffic commuter corridor with well-documented recurring flooding. |
@@ -238,12 +238,32 @@ under time pressure.
 - Risk levels differ by **shape and label as well as colour** — glare and colour-blindness.
 - Service worker caches the shell and last risk data, labelled with when it was updated.
 - Risk overlay loads **before** map tiles. It carries the information that matters.
-- **The whole screen fits without scrolling on a 390×844 phone.** The map is sized by
-  `flex: 1`, so it takes whatever the other bands leave; its `min-height` is only a
-  floor for short screens and **must stay below** what the flex calculation would give,
-  or the page starts scrolling and the fixed action bar floats over the disclaimer.
-  Adding a band above the legend means re-checking that floor — this has already bitten
-  once, when the view toggle pushed the layout 86px over.
+- **Two self-hosted font subsets, 76 KB total.** This supersedes the original
+  system-fonts-only rule. Source Serif 4 carries the reading sentence and
+  Atkinson Hyperlegible Next carries everything else; Atkinson was drawn for
+  low-acuity legibility, which is a functional argument on a screen read in rain
+  and glare. Both are same-origin behind the existing cache, preloaded, and set
+  `font-display: swap` behind a system fallback, so text paints immediately and
+  the webfont never blocks. If a throttled-3G measurement shows first contentful
+  paint regressing, revert to the fallback stacks — the type scale carries more
+  of the hierarchy than the typeface does.
+- **The map is the stage and all chrome floats above it.** Overlays are
+  absolutely positioned and must never be added to normal flow. This replaces
+  the old `min-height` floor and the arithmetic that maintained it: because
+  overlays do not participate in layout, adding one can no longer push the page
+  into scrolling. Verify with `docs/evidence/verify-layout.js` at 390×844.
+  What overlays *can* still do is collide with each other, so the verifier is
+  the check that matters now — the segments and the dock overlapped by 22px the
+  first time they were measured against real button text.
+- **Light and dark are a token pair, not two stylesheets.** Every colour,
+  cartography included, is a custom property. The dark basemap is
+  `color-scheme=Dark` appended to the style URL — already in the
+  `TileCachePolicy` whitelist, so it needs no backend or template change.
+  `web/src/contrast.test.ts` parses `styles.css` itself and fails if any
+  foreground/background pair drops below WCAG AA in either theme, or if the
+  ramp drifts from `levels.ts`.
+- **Nothing below 12px, anywhere.** The gauge rail is 88px wide rather than the
+  62px its first draft used, precisely so its band labels can hold that floor.
 - Text is short, concrete, free of meteorological jargon.
 - **Every risk level explains itself in plain language.** This is a functional requirement:
   a number a user cannot interrogate is a number they will not trust, and an untrusted
