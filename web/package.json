@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "deploy:web": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/deploy-web.ps1",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types src/**/*.test.ts"
