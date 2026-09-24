@@ -81,6 +81,10 @@ const elements = {
   status: document.querySelector<HTMLElement>("#status")!,
   legend: document.querySelector<HTMLElement>("#legend")!,
   themeToggle: document.querySelector<HTMLButtonElement>("#theme-toggle")!,
+  themeLabel: document.querySelector<HTMLElement>("#theme-toggle .tool__label")!,
+  navbar: document.querySelector<HTMLElement>(".navbar")!,
+  navMenu: document.querySelector<HTMLButtonElement>("#nav-menu")!,
+  draftNotice: document.querySelector<HTMLElement>("#draft-notice")!,
   viewBar: document.querySelector<HTMLElement>(".view-bar")!,
   viewReason: document.querySelector<HTMLElement>("#view-reason")!,
   viewOptions: document.querySelectorAll<HTMLButtonElement>(".view-toggle__option"),
@@ -125,13 +129,60 @@ let sharedSheet: DetailSheet | null = null;
 /** Cells the server says residents have confirmed since the last scoring run. */
 let confirmedByReports = new Set<string>();
 
+/**
+ * The hamburger, below 600px.
+ *
+ * `#navbar-controls` is ONE element: an inline row on the bar at wide widths,
+ * and the panel this opens at narrow ones. The stylesheet decides which;
+ * nothing here knows the breakpoint. That is what keeps a single
+ * `#theme-toggle` and a single `#language-select` in the document, rather than
+ * one setting with two sources of truth.
+ *
+ * Closing is not decoration. The panel covers the reading card, which is the
+ * most important thing on screen, so every way out of it is wired: the button,
+ * Escape, a tap anywhere else, and making a choice.
+ */
+function closeNavMenu(returnFocus = false): void {
+  if (!elements.navbar.classList.contains("navbar--menu-open")) return;
+  elements.navbar.classList.remove("navbar--menu-open");
+  elements.navMenu.setAttribute("aria-expanded", "false");
+  if (returnFocus) elements.navMenu.focus();
+}
+
+function installNavMenu(): void {
+  elements.navMenu.addEventListener("click", () => {
+    const open = elements.navbar.classList.toggle("navbar--menu-open");
+    elements.navMenu.setAttribute("aria-expanded", String(open));
+  });
+
+  // A choice is a reason to close: the panel has done its job and it is
+  // sitting on top of the answer the user came for.
+  elements.themeToggle.addEventListener("click", () => closeNavMenu());
+  elements.languageSelect.addEventListener("change", () => closeNavMenu());
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeNavMenu(true);
+  });
+
+  // `pointerdown`, not `click`: a click on the map canvas is swallowed by
+  // MapLibre before it reaches the document, so the panel would stay open over
+  // a map the user had already started interacting with.
+  document.addEventListener("pointerdown", (event) => {
+    const target = event.target;
+    if (target instanceof Node && elements.navbar.contains(target)) return;
+    closeNavMenu();
+  });
+}
+
 /** Paint the interface. The map is a separate, heavier step. */
 function applyThemeToDocument(theme: Theme): void {
   document.documentElement.dataset["theme"] = theme;
-  elements.themeToggle.setAttribute(
-    "aria-label",
-    theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
-  );
+  // One string, two consumers. In the bar the button is an icon and the label
+  // is hidden; in the hamburger menu the label is what makes the row legible.
+  // Computing it twice is how the two drift apart.
+  const action = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
+  elements.themeToggle.setAttribute("aria-label", action);
+  elements.themeLabel.textContent = action;
   // The theme-colour meta drives the browser chrome around the PWA; leaving it
   // on the old navy is the one place a stale colour is visible outside the app.
   document
@@ -661,16 +712,14 @@ function getActiveLocale(): string {
  * claiming a confidence nobody on the project can back.
  */
 function paintDraftNotice(): void {
-  const existing = elements.language.querySelector(".language__notice");
-  existing?.remove();
-
-  if (!isDraftLocale()) return;
-
-  const notice = document.createElement("p");
-  notice.className = "language__notice";
-  notice.setAttribute("role", "note");
-  notice.textContent = t("language.draft");
-  elements.language.append(notice);
+  const draft = isDraftLocale();
+  // In the reading card's meta row, not beside the language select. The select
+  // is behind a hamburger on a phone, so a notice attached to it would be
+  // visible only while that menu was open -- and this is a safety disclosure,
+  // read at the moment the warning is read, not at the moment the language
+  // was picked.
+  elements.draftNotice.textContent = draft ? t("language.draft") : "";
+  elements.draftNotice.hidden = !draft;
 }
 
 /** Relabel the chrome that is not rebuilt on every render. */
@@ -714,6 +763,12 @@ async function start(): Promise<void> {
     renderLegend(activeView);
     applyViewDecision();
   });
+
+  // Wired here rather than beside the theme switch further down, because
+  // everything below this point is behind the config fetch. If that fails the
+  // app shows a fatal message -- and the settings that might fix it, language
+  // most of all, must still open.
+  installNavMenu();
 
   for (const option of elements.viewOptions) {
     option.addEventListener("click", () => {

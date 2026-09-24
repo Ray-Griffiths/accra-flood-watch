@@ -94,6 +94,13 @@
   /* Keeps the dock clear of the iOS home indicator and Android gesture bar,
      where it would otherwise be unpressable. */
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* The navbar is the first thing this app has ever pinned to the top edge,
+     so it is also the first thing that can end up under a notch. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  /* 46px of control plus 5px either side -- the same 46px square the search
+     field and the theme button already are. Everything below the bar is
+     positioned off this, so the bar's height is stated once. */
+  --nav-h: 56px;
 
   /* How much of the bottom edge the disclaimer occupies, and therefore the
      floor every other bottom-anchored overlay sits above. Measured: three
@@ -208,23 +215,25 @@ body {
 
 /*
  * Measured at 390x844 against the longest real copy in every view, then
- * checked with docs/evidence/verify-layout.js. The control column clears the
- * TALLEST state of the reading card, not the current one -- the terrain
- * sentence runs to three lines and the tagline is allowed to wrap beneath it.
+ * checked with docs/evidence/verify-layout.js. Offsets below the bar are
+ * expressed against --nav-h so the bar's height is stated in one place.
  */
-.ov-read {
-  top: 14px;
-  left: 12px;
-  right: 12px;
+
+/* Full width and pinned to the top edge: the one piece of this interface that
+   is chrome rather than a floating card, and the only place the app says its
+   own name. It still sits OVER the map -- the map runs edge to edge behind
+   it -- so the stage is uninterrupted. */
+.ov-nav {
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 6;
 }
 
-.ov-tools {
-  top: 156px;
+.ov-read {
+  top: calc(var(--nav-h) + var(--safe-top) + 10px);
+  left: 12px;
   right: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: flex-end;
 }
 
 /*
@@ -256,6 +265,159 @@ body {
   right: 0;
   bottom: 0;
   padding: 8px 14px calc(8px + var(--safe-bottom));
+}
+
+/* ------------------------------------------------------------------ navbar */
+
+.navbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--nav-h);
+  padding: 5px 14px;
+  padding-top: calc(5px + var(--safe-top));
+  background: var(--surface);
+  border-bottom: 1px solid var(--edge);
+  box-shadow: var(--lift);
+}
+
+/* An h1 that has to behave like a label. It is the app's identity, not a
+   headline, so it runs at body weight and gives way the moment the search
+   field needs the room. */
+.navbar__name {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.navbar__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Shown only below the breakpoint; the media query switches it on.
+   `.tool.navbar__burger`, not `.navbar__burger`: the button carries both
+   classes, `.tool` also sets `display`, and it is declared further down the
+   file -- at equal specificity it won, and the hamburger showed at every
+   width. */
+.tool.navbar__burger {
+  display: none;
+}
+
+/* The label belongs to the menu, where a bare icon would be a guess. On the
+   bar the icon plus aria-label is enough and the words would not fit. */
+.tool__label {
+  display: none;
+}
+
+/*
+ * Search takes the whole bar while it is in use.
+ *
+ * `flex: 1` on the form plus a hidden name is what widens it -- no `100vw`
+ * arithmetic, because the bar is already the full width of the screen. The
+ * second selector in each pair keeps the field open while the RESULTS are
+ * open, not merely while the input has focus: tapping a result moves focus out
+ * of the input, and collapsing the bar at that moment moves the list out from
+ * under a descending thumb.
+ */
+.navbar:has(.search:focus-within) .navbar__name,
+.navbar:has(.search__results:not([hidden])) .navbar__name {
+  display: none;
+}
+
+/* Hidden, not merely covered. A control that is off screen must not still be
+   reachable by Tab. */
+.navbar:has(.search:focus-within) .navbar__controls,
+.navbar:has(.search__results:not([hidden])) .navbar__controls,
+.navbar:has(.search:focus-within) .tool.navbar__burger,
+.navbar:has(.search__results:not([hidden])) .tool.navbar__burger {
+  display: none;
+}
+
+.navbar:has(.search:focus-within) .search,
+.navbar:has(.search__results:not([hidden])) .search {
+  flex: 1;
+}
+
+/* ---------------------------------------------------------- navbar: narrow */
+
+/*
+ * 600px is set by content, not convention. Inline, the bar needs ~358px: the
+ * name at ~140, three controls at 44 + 44 + 86, and ~44 of gaps and padding.
+ * That fits at 600 and does not fit at 390. Collapsed behind the hamburger it
+ * needs ~264px, which clears a 320px phone.
+ *
+ * A 700px tablet therefore keeps the full inline bar. That is deliberate: a
+ * hamburger hiding two controls on a screen wide enough to show them is
+ * hiding them for nothing.
+ */
+@media (max-width: 599px) {
+  .tool.navbar__burger {
+    display: grid;
+  }
+
+  /* The SAME element as the inline row above -- this is the whole point. It
+     changes position, not identity, so there is one #theme-toggle and one
+     #language-select in the document. */
+  .navbar__controls {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 12px;
+    z-index: 7;
+    display: none;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    width: 220px;
+    padding: 8px;
+    background: var(--surface-solid);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius);
+    box-shadow: var(--lift);
+  }
+
+  /* `display: none` above is doing real work: it takes the panel's contents
+     out of the tab order without needing `inert` or a focus trap. */
+  .navbar--menu-open .navbar__controls {
+    display: flex;
+  }
+
+  /* In the panel the controls are rows, not icons in a row. */
+  .navbar__controls .tool {
+    width: auto;
+    justify-content: flex-start;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 10px;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  .navbar__controls .tool__label {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .navbar__controls .language,
+  .navbar__controls .language__select {
+    width: 100%;
+  }
+
+  .navbar__controls .language__select {
+    box-shadow: none;
+  }
 }
 
 /* ------------------------------------------------------------ reading card */
@@ -324,6 +486,36 @@ body {
 
 .tagline {
   color: var(--ink-2);
+}
+
+/*
+ * "This translation is a draft."
+ *
+ * It sits in the meta row rather than beside the language select, because the
+ * select is behind a hamburger on a phone and this would then be visible only
+ * while that menu was open. Somebody reading an unreviewed translation of a
+ * flood warning is entitled to know that at the moment they are reading it,
+ * not at the moment they chose the language.
+ */
+.draft-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.draft-notice[hidden] {
+  display: none;
+}
+
+.draft-notice::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--marker);
+  flex: none;
 }
 
 /* ------------------------------------------------------------------- tools */
@@ -628,8 +820,12 @@ body {
  * `position: relative` because the results panel hangs off it absolutely
  * rather than pushing the tools column around when it opens.
  */
+/* Deliberately NOT a containing block. The results panel anchors to the navbar
+   instead, so it spans the bar whether the field is expanded or collapsed --
+   anchored here it would be 44px wide whenever the field was not in use. */
 .search {
-  position: relative;
+  position: static;
+  flex: none;
 }
 
 /* The label is for screen readers; the placeholder and icon carry it visually.
@@ -707,7 +903,7 @@ body {
  */
 .search:focus-within .search__field,
 .search:has(.search__results:not([hidden])) .search__field {
-  width: calc(100vw - 24px);
+  width: 100%;
   padding-right: 8px;
   border-color: var(--ink-2);
 }
@@ -715,15 +911,6 @@ body {
 .search:focus-within .search__input,
 .search:has(.search__results:not([hidden])) .search__input {
   opacity: 1;
-}
-
-/* The results panel is absolutely positioned and lands squarely on top of the
-   theme button and the language select. Hiding them rather than letting them
-   sit underneath keeps them out of the tab order too, so focus cannot move to
-   a control that is not on screen. They come back when the list closes. */
-.ov-tools:has(.search__results:not([hidden])) .tool,
-.ov-tools:has(.search__results:not([hidden])) .language {
-  visibility: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -750,14 +937,15 @@ body {
   cursor: pointer;
 }
 
-/* Hangs off the field rather than sitting under it in flow, so opening the
-   list cannot move the theme button or the language select out from under a
-   thumb that is already on its way to them. */
+/* Hangs off the NAVBAR, not off the field. Anchored to the field it would be
+   46px wide whenever the field was collapsed; anchored to the bar it spans the
+   bar in both states. Out of flow either way, so opening the list cannot move
+   the controls out from under a thumb already on its way to them. */
 .search__results {
   position: absolute;
-  top: 54px;
-  right: 0;
-  width: calc(100vw - 24px);
+  top: calc(100% + 8px);
+  left: 12px;
+  right: 12px;
   max-height: 50vh;
   overflow-y: auto;
   padding: 5px;
@@ -1130,10 +1318,12 @@ body {
   font-weight: 700;
 }
 
+/* The inset background is what marks this as an aside. It previously also had
+   a 3px rule down the left edge, which said the same thing twice. */
 .sheet__history {
   margin: 10px 0 0;
   padding: 10px 12px;
-  border-left: 3px solid var(--ink-2);
+  border-radius: var(--radius);
   background: color-mix(in srgb, var(--ink) 8%, var(--surface-solid));
   font-size: 14px;
   color: var(--ink-2);
@@ -1292,7 +1482,7 @@ body {
    * child is not a grid item at all, so there is no row to be trapped in.
    */
   .map {
-    inset: 0 0 0 344px;
+    inset: var(--nav-h) 0 0 344px;
   }
 
   .ov,
@@ -1304,28 +1494,38 @@ body {
     box-shadow: none;
   }
 
+  /* Re-asserted AFTER the rule above, which would otherwise drop the bar into
+     the sidebar column as a grid item. It spans the full width at every size:
+     it is the app's title bar, not part of the sidebar. */
+  .ov-nav {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    box-shadow: var(--lift);
+  }
+
   /* `margin-inline`, not `margin: 0 22px` -- the shorthand would reset the
      top and bottom margins that give the column its ends, and it sits above
-     them in source order. */
-  .stage > .ov,
+     them in source order.
+     `:not(.ov-nav)` because the bar is not part of the sidebar: it spans the
+     window, and this margin inset it by 22px at each end. */
+  .stage > .ov:not(.ov-nav),
   .stage > .rail {
     grid-column: 1;
     margin-inline: 22px;
   }
 
-  /* The stage itself carries no padding, so that the map can fill the window
-     edge to edge; the sidebar's own ends provide the breathing room. */
+  /* Clears the bar. Deliberately a margin and NOT `padding-top` on .stage:
+     absolutely positioned children resolve against their containing block's
+     PADDING box, so padding the stage would push the navbar down along with
+     everything else. */
   .ov-read {
-    margin-top: 18px;
+    margin-top: calc(var(--nav-h) + 18px);
   }
 
-  .ov-tools {
-    align-items: stretch;
-  }
-
-  /* The field has a column of its own now, so it has no reason to take over
-     the viewport -- and `calc(100vw - 24px)` inside a 344px sidebar would
-     simply overflow it. */
+  /* The bar has room for everything inline, so the sidebar never holds the
+     controls and the hamburger stays away. */
   .search__field,
   .search__field:focus-within {
     width: 100%;
@@ -1333,18 +1533,6 @@ body {
 
   .search__input {
     opacity: 1;
-  }
-
-  .search__results {
-    position: static;
-    width: auto;
-  }
-
-  /* In a column of its own the list pushes the controls below it rather than
-     covering them, so there is nothing hidden and nothing to un-focus. */
-  .ov-tools:has(.search__results:not([hidden])) .tool,
-  .ov-tools:has(.search__results:not([hidden])) .language {
-    visibility: visible;
   }
 
   .ov-legal {

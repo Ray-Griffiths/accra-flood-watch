@@ -10,7 +10,16 @@
           "web/src/styles.css"
         ],
         "createdAt": "2026-09-21T19:12:49.239Z",
-        "reason": "Project spec (CLAUDE.md, 'Risk levels differ by shape and label as well as colour'): .depth-choice widens its left edge with severity as a non-colour cue for colour-blind users and direct sunlight. Documented in the CSS comment above the rule; predates this session. The decorative .callout side bar flagged by this rule has been removed instead."
+        "reason": "depth-choice: the 8px left edge widens with severity (ankle/knee/waist/impassable) and is a required non-colour cue under the project rule that risk levels differ by shape as well as colour; see CLAUDE.md UI rules"
+      },
+      {
+        "rule": "clipped-overflow-container",
+        "value": "*",
+        "files": [
+          "web/index.html"
+        ],
+        "createdAt": "2026-09-24T14:07:39.451Z",
+        "reason": "the clip IS the viewport: .stage is height:100% and its overflow:hidden is what enforces the project rule that the screen never scrolls. Measured in-browser: menu panel 64-175 and search results 64-486 inside a stage of 0-844, and verify-layout.js reports no overlay outside the stage in either theme at 390/620/1440"
       }
     ]
   }

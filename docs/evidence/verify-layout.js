@@ -10,6 +10,7 @@
     "#status", "#tagline", "#map", "#legend", "#search", ".search__input",
     ".search__clear", ".search__results", ".language", "#language-select",
     ".view-bar", "#view-reason", ".view-toggle__option[data-view]",
+    ".navbar", ".navbar__name", "#nav-menu", "#navbar-controls", "#draft-notice",
     "#route-button", "#route-prompt", ".route-prompt__text", "#route-cancel",
     "#report-button", "#report-button .report-button__label",
     "#detail-sheet", "#route-sheet", "#report-sheet",
@@ -18,7 +19,7 @@
   ];
   const missing = SELECTORS.filter((s) => !document.querySelector(s));
 
-  const OVERLAYS = [".ov-read", ".ov-tools", ".rail", ".ov-seg", ".ov-dock", ".ov-legal"];
+  const OVERLAYS = [".navbar", ".ov-read", ".rail", ".ov-seg", ".ov-dock", ".ov-legal"];
   const boxes = OVERLAYS
     .map((s) => [s, document.querySelector(s)])
     .filter(([, el]) => el && getComputedStyle(el).display !== "none")

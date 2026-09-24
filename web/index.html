@@ -30,22 +30,17 @@
           </noscript>
         </div>
 
-        <!-- The reading card. It answers in a sentence before it answers in
-             colour, so somebody who glances once and leaves still got the
-             answer. #status and #tagline keep their ids and their writers in
-             main.ts; only their position and styling change. -->
-        <div class="ov ov-read">
-          <p id="view-reason" class="ov-read__txt" role="status" aria-live="polite"></p>
-          <p class="ov-read__meta">
-            <span id="status" class="status status--pending">Loading flood risk…</span>
-            <span id="tagline" class="tagline">Accra</span>
-          </p>
-        </div>
+        <!-- The navbar. The app's only piece of fixed chrome, and the only
+             place it says its own name.
 
-        <!-- Search and the theme switch. Both are chosen deliberately rather
-             than under pressure, which is why they are here and the report
-             button is not. -->
-        <div class="ov ov-tools">
+             #navbar-controls is rendered ONCE. At >=600px it is an inline row
+             on the bar; below that the same element becomes the dropdown the
+             hamburger opens. Rendering it twice would mean two #theme-toggle
+             and two #language-select nodes, which main.ts reaches by unique
+             id -- one setting with two sources of truth. -->
+        <header class="ov ov-nav navbar">
+          <h1 class="navbar__name">Accra Flood Watch</h1>
+
           <form id="search" class="search" role="search" autocomplete="off">
             <label class="search__label" for="search-input">Search for a place</label>
             <div class="search__field">
@@ -64,15 +59,48 @@
             <div id="search-results" class="search__results" role="region" aria-live="polite" hidden></div>
           </form>
 
-          <button id="theme-toggle" class="tool" type="button" aria-label="Switch to light theme">
-            <svg class="tool__moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg>
-            <svg class="tool__sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></svg>
-          </button>
+          <div id="navbar-controls" class="navbar__controls">
+            <button id="theme-toggle" class="tool" type="button" aria-label="Switch to light theme">
+              <svg class="tool__moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg>
+              <svg class="tool__sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></svg>
+              <!-- Hidden on the bar, shown in the menu, where a bare icon
+                   would be a guess. main.ts writes the same string it writes
+                   into aria-label. -->
+              <span class="tool__label"></span>
+            </button>
 
-          <div class="language">
-            <label class="search__label" for="language-select">Language</label>
-            <select id="language-select" class="language__select"></select>
+            <div class="language">
+              <label class="search__label" for="language-select">Language</label>
+              <select id="language-select" class="language__select"></select>
+            </div>
           </div>
+
+          <button
+            id="nav-menu"
+            class="tool navbar__burger"
+            type="button"
+            aria-expanded="false"
+            aria-controls="navbar-controls"
+            aria-label="Settings"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          </button>
+        </header>
+
+        <!-- The reading card. It answers in a sentence before it answers in
+             colour, so somebody who glances once and leaves still got the
+             answer. #status and #tagline keep their ids and their writers in
+             main.ts; only their position and styling change. -->
+        <div class="ov ov-read">
+          <p id="view-reason" class="ov-read__txt" role="status" aria-live="polite"></p>
+          <p class="ov-read__meta">
+            <span id="status" class="status status--pending">Loading flood risk…</span>
+            <span id="tagline" class="tagline">Accra</span>
+            <!-- Draft-translation warning. It lives here rather than beside the
+                 language select so it stays visible once that select is behind
+                 a hamburger -- it is a safety disclosure, not a tooltip. -->
+            <span id="draft-notice" class="draft-notice" role="note" hidden></span>
+          </p>
         </div>
 
         <!-- The gauge rail. #legend is a CHILD, because renderLegend calls

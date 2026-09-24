@@ -63,7 +63,13 @@ const PAIRS: ReadonlyArray<readonly [string, string]> = [
  * Tokens that carry no colour and so have nothing to restate per theme. Any
  * token NOT on this list has to be defined in both blocks -- see the last test.
  */
-const THEME_NEUTRAL: ReadonlySet<string> = new Set(["--radius", "--safe-bottom"]);
+const THEME_NEUTRAL: ReadonlySet<string> = new Set([
+  "--radius",
+  "--safe-bottom",
+  "--safe-top",
+  "--nav-h",
+  "--legal-reserve",
+]);
 
 describe("contrast arithmetic", () => {
   /*

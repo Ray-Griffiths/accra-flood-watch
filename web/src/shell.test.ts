@@ -34,6 +34,7 @@ const IDS = [
   "status", "tagline", "map", "legend", "search", "search-input", "search-results",
   "language-select", "view-reason", "route-button", "route-prompt", "route-cancel",
   "report-button", "detail-sheet", "route-sheet", "report-sheet", "theme-toggle",
+  "nav-menu", "navbar-controls", "draft-notice",
 ];
 
 /** class tokens reached for by class. */
@@ -41,7 +42,8 @@ const CLASSES = [
   "search__input", "search__clear", "search__results", "language",
   "view-bar", "view-toggle__option", "route-prompt__text",
   "report-button__label", "sheet__body", "sheet__close", "disclaimer",
-  "rail__cap",
+  "rail__cap", "navbar", "navbar__name", "navbar__controls", "navbar__burger",
+  "tool__label",
 ];
 
 describe("shell DOM contract", () => {
@@ -112,6 +114,55 @@ describe("shell DOM contract", () => {
     assert.ok(
       rail.indexOf("rail__cap") > rail.indexOf('id="legend"'),
       "rail__cap must come after #legend inside .rail",
+    );
+  });
+
+  it("renders the settings controls exactly once each", () => {
+    // The navbar shows these inline on a wide screen and inside the hamburger
+    // panel on a narrow one. It is the SAME element both times -- CSS moves it,
+    // nothing duplicates it. Rendering a second copy for the menu would give
+    // one setting two sources of truth, and main.ts reaches both of these by
+    // unique id, so the second copy would simply never be wired up.
+    for (const id of ["theme-toggle", "language-select"]) {
+      const matches = HTML.match(new RegExp(`id="${id}"`, "g")) ?? [];
+      assert.equal(matches.length, 1, `#${id} appears ${matches.length} times, must appear once`);
+    }
+  });
+
+  it("keeps the settings controls inside #navbar-controls", () => {
+    // That single element is what the stylesheet turns into the dropdown, so a
+    // control outside it is a control the hamburger cannot reach.
+    // Bounded by the element that follows the panel rather than by a closing
+    // tag: the panel contains nested divs, so "the next </div>" would stop
+    // inside it and "the last </div>" would run past it.
+    const scope = scopeOf('id="navbar-controls"', 'id="nav-menu"');
+    assert.ok(scope.includes('id="theme-toggle"'), "#theme-toggle must sit inside #navbar-controls");
+    assert.ok(scope.includes('id="language-select"'), "#language-select must sit inside #navbar-controls");
+  });
+
+  it("keeps the search form and the hamburger inside the navbar", () => {
+    const scope = scopeOf('class="ov ov-nav navbar"', "</header>");
+    assert.ok(scope.includes('id="search"'), "#search must sit inside the navbar");
+    assert.ok(scope.includes('id="nav-menu"'), "#nav-menu must sit inside the navbar");
+    assert.ok(scope.includes("navbar__name"), "the navbar must carry the app name");
+  });
+
+  it("wires the hamburger to the controls it opens", () => {
+    const scope = scopeOf('id="nav-menu"', "</button>");
+    assert.match(scope, /aria-controls="navbar-controls"/, "aria-controls must name the panel");
+    assert.match(scope, /aria-expanded="false"/, "aria-expanded must start closed");
+  });
+
+  it("keeps the draft-translation notice in the reading card, not the navbar", () => {
+    // It is a safety disclosure. Beside the language select it would be hidden
+    // whenever the hamburger menu was shut.
+    const card = scopeOf('class="ov ov-read"', "</div>");
+    assert.ok(card.includes('id="draft-notice"'), "#draft-notice must sit in the reading card");
+
+    const nav = scopeOf('class="ov ov-nav navbar"', "</header>");
+    assert.ok(
+      !nav.includes('id="draft-notice"'),
+      "#draft-notice must not be in the navbar -- it would vanish with the menu",
     );
   });
 

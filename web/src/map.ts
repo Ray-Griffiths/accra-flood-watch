@@ -52,12 +52,18 @@ const FONT_BOLD = ["Amazon Ember Bold", "Noto Sans Bold"];
  * the reading card and the feature looks broken rather than occluded. The
  * numbers mirror the overlay offsets in styles.css; if those change, these do.
  *
- * Measured at 390x844: the reading card ends at y=139, the disclaimer starts
+ * Measured at 390x844: the navbar occupies y=0 to y=56, the disclaimer starts
  * at y=779, and the gauge rail occupies x=290 to x=378. `right` is 100 rather
- * than the 90 the design preview used, because the rail was widened to 88px
- * to keep its labels at 12px.
+ * than the 90 the design preview used, because the rail was widened to 88px to
+ * keep its labels at 12px.
+ *
+ * `top` is 260, taken from the reading card's TALLEST state rather than its
+ * usual one: in English the card ends at y~215, but in Twi or Ga the
+ * draft-translation notice runs to three lines and pushes it to y~249. Sizing
+ * this to the common case would hide a searched pin for exactly the users
+ * already reading the app in a second language.
  */
-export const MAP_PADDING = { top: 150, bottom: 130, left: 16, right: 100 } as const;
+export const MAP_PADDING = { top: 260, bottom: 130, left: 16, right: 100 } as const;
 
 // Shared with the pre-map viewport maths so the two cannot disagree.
 import { type Bbox } from "./viewport.ts";
