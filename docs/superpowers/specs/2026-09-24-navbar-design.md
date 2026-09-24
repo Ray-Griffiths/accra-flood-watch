@@ -269,3 +269,67 @@ size as each other, which was the point.
 
 Measured at 1440×900: reading card 74–225, rail 239–368, toggles 635–671, dock
 685–787, disclaimer 801–882 with an 18px foot.
+
+---
+
+## Amendment: legend detail, the map's own controls, and the logo
+
+### The map controls had vanished, twice over
+
+`NavigationControl` and `GeolocateControl` are added at `top-right`, which
+since the navbar arrived is underneath the bar and the reading card. They were
+not subtle, they were gone. And they would have been unreadable even in the
+clear: MapLibre bakes dark SVGs into `background-image`, so on the dark surface
+the glyphs disappear.
+
+Both are fixed. The controls join the right-hand column — the pair sits just
+above the vertical midline and the gauge rail just below it, so the eye reads
+one stack with one gap rather than scattered islands. Neither needs a magic
+number: they meet at 50% whatever height their contents happen to be, which is
+what keeps it stable as the legend changes length between views. The icons are
+inverted by default (dark is the base theme) and un-inverted under
+`[data-theme="light"]`.
+
+On desktop the map area is clear of chrome, so the controls go back to the
+corner they conventionally live in.
+
+### The rail went to 112px
+
+88px cleared the 12px type floor but left "Floods in heavy rain" wrapping to
+three lines, which made the rail 273px — a third of the phone screen, and low
+enough to collide with the segment bar once the new heading was added. At 112px
+the longest band label wraps to two lines, so the rail is both **shorter**
+(172–179px) and easier to read. `MAP_PADDING.right` follows to 124.
+
+### Legend detail
+
+`renderLegend` now emits a `.legend__intro` naming what the ramp is a ramp of —
+"Flood risk now", "Risk later today", "Where water goes". The last keeps the
+terrain view's separate vocabulary: about the ground, not about today.
+
+The per-level `meaning` was always in the DOM for screen readers and hidden
+visually. On desktop, where the sidebar is 300px, it now prints: "Floods first
+— Goes under earliest when it rains hard". That is what makes the legend
+readable rather than merely present, and it fills the space the sidebar had
+going spare.
+
+### Reading-card facts, desktop only
+
+A `#read-facts` list under the meta row: worst level in view (as a ramp chip,
+not ramp-coloured text), active reports, and rainfall for the next 6h and 24h.
+Every one of these was already fetched and then dropped on the floor. Null
+rainfall prints "—", never "0.0 mm" — a failed feed is not a dry day.
+
+Labels carry their own `data-i18n` key so adding a fact is one edit, not two;
+`shell.test.ts` fails if a fact ships without one. The strings are **English
+only**, and Twi/Gã fall through `t()`'s fallback rather than carrying a
+machine-drafted translation nobody on the project can check.
+
+### The logo
+
+The mark from `public/icons/icon.svg`, inlined and monochrome in
+`currentColor`. The file paints a navy `#0b3d5c` tile — that was `--brand`, a
+token this redesign deleted, and a navy chip reads as a foreign object in both
+themes. The droplet and waves are the identity; the tile is app-icon chrome a
+navbar does not need. It is deliberately not tinted: a pale blue droplet beside
+a risk legend is one glance away from being read as "Low".

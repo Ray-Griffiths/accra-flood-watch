@@ -70,6 +70,22 @@ const en: Catalog = {
   "status.offline": "Cannot reach the service. Check your connection.",
   "status.zoomIn": "Zoom in to see street-level flood risk.",
 
+  // Reading-card facts. English only, deliberately: Twi and Ga fall through
+  // to these via t()'s fallback rather than carrying a machine-drafted
+  // translation nobody on the project can check. The draft-translation notice
+  // already tells the user that is what they are looking at.
+  "fact.worst": "Worst in view",
+  "fact.reports": "Reports now",
+  "fact.rain6": "Rain next 6h",
+  "fact.rain24": "Next 24h",
+  "fact.none": "None",
+  // Short on purpose: at 112px a sentence wraps to three lines and the rail
+  // grows into the segment bar. "Where water goes" keeps the terrain view's
+  // separate vocabulary -- about the ground, not about today.
+  "legend.intro.now": "Flood risk now",
+  "legend.intro.later": "Risk later today",
+  "legend.intro.terrain": "Where water goes",
+
   "view.now": "Right now",
   "view.later": "Later today",
   "view.terrain": "When it rains",

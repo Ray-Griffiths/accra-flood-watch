@@ -39,6 +39,19 @@
              and two #language-select nodes, which main.ts reaches by unique
              id -- one setting with two sources of truth. -->
         <header class="ov ov-nav navbar">
+          <!-- The mark from public/icons/icon.svg, inlined and monochrome.
+               The file itself paints a navy #0b3d5c tile -- that was --brand,
+               a token this redesign deleted, and a navy chip reads as a
+               foreign object in both themes. The droplet and the waves ARE
+               the identity; the tile is app-icon chrome a navbar does not
+               need. currentColor so it follows the theme, and no ramp hue,
+               because a pale blue droplet beside a risk legend is one glance
+               away from being read as "Low". -->
+          <svg class="navbar__mark" viewBox="0 0 512 512" width="22" height="22" aria-hidden="true">
+            <!-- Filled, not stroked. As an outline the droplet reads as a bell. -->
+            <path d="M256 96c0 0 104 118 104 186a104 104 0 1 1-208 0c0-68 104-186 104-186z" fill="currentColor"/>
+            <path d="M96 392c40 0 40-24 80-24s40 24 80 24 40-24 80-24 40 24 80 24" fill="none" stroke="currentColor" stroke-width="34" stroke-linecap="round"/>
+          </svg>
           <h1 class="navbar__name">Accra Flood Watch</h1>
 
           <form id="search" class="search" role="search" autocomplete="off">
@@ -106,6 +119,29 @@
                  a hamburger -- it is a safety disclosure, not a tooltip. -->
             <span id="draft-notice" class="draft-notice" role="note" hidden></span>
           </p>
+
+          <!-- Desktop only. The sidebar has room the phone does not, and these
+               are all numbers the app has already fetched and was throwing
+               away: the worst reading on screen, what neighbours are reporting,
+               and the rain that drives the score. -->
+          <dl id="read-facts" class="ov-read__facts">
+            <div class="fact">
+              <dt data-i18n="fact.worst">Worst in view</dt>
+              <dd id="fact-worst">—</dd>
+            </div>
+            <div class="fact">
+              <dt data-i18n="fact.reports">Reports now</dt>
+              <dd id="fact-reports">—</dd>
+            </div>
+            <div class="fact">
+              <dt data-i18n="fact.rain6">Rain next 6h</dt>
+              <dd id="fact-rain6">—</dd>
+            </div>
+            <div class="fact">
+              <dt data-i18n="fact.rain24">Next 24h</dt>
+              <dd id="fact-rain24">—</dd>
+            </div>
+          </dl>
         </div>
 
         <!-- The gauge rail. #legend is a CHILD, because renderLegend calls

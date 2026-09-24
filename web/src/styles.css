@@ -203,6 +203,63 @@ body {
   font-size: 12px;
 }
 
+/* ------------------------------------------------- map's own controls */
+
+/*
+ * Zoom and locate.
+ *
+ * MapLibre puts these at the top-right of the map, which since the navbar
+ * arrived is underneath the bar and the reading card -- they were not subtle,
+ * they were gone. Two separate problems, both fixed here: they were occluded,
+ * AND their icons are dark SVGs baked into background-images, so on the dark
+ * surface they would have been invisible even in the clear.
+ *
+ * They join the right-hand column rather than floating on their own: this pair
+ * sits just above the vertical midline and the gauge rail just below it, so
+ * the eye reads one stack with one gap instead of scattered islands. Neither
+ * needs a magic number -- they meet at 50% whatever height their contents
+ * happen to be, which is what keeps this stable as the legend changes length
+ * between the risk and terrain views.
+ */
+.maplibregl-ctrl-top-right {
+  top: 50%;
+  right: 0;
+  transform: translateY(calc(-100% - 6px));
+}
+
+.maplibregl-ctrl-top-right .maplibregl-ctrl {
+  float: none;
+  margin: 0 12px 8px 0;
+}
+
+.maplibregl-ctrl-group {
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  box-shadow: var(--lift);
+  overflow: hidden;
+}
+
+.maplibregl-ctrl-group button {
+  width: 40px;
+  height: 40px;
+  background: transparent;
+}
+
+.maplibregl-ctrl-group button + button {
+  border-top: 1px solid var(--edge);
+}
+
+/* Dark is the base theme, so inverting MapLibre's dark icons is the default
+   and light is the exception. They are monochrome, so this is lossless. */
+.maplibregl-ctrl-icon {
+  filter: invert(1);
+}
+
+:root[data-theme="light"] .maplibregl-ctrl-icon {
+  filter: none;
+}
+
 /* ---------------------------------------------------------------- overlays */
 
 /* Everything above the map floats. Nothing here participates in flow, which
@@ -304,6 +361,12 @@ body {
 /* An h1 that has to behave like a label. It is the app's identity, not a
    headline, so it runs at body weight and gives way the moment the search
    field needs the room. */
+/* Sized to the cap height of the name beside it, not to the bar. */
+.navbar__mark {
+  flex: none;
+  color: var(--ink);
+}
+
 .navbar__name {
   margin: 0;
   flex: 1;
@@ -358,7 +421,9 @@ body {
  */
 @media (max-width: 899px) {
   .navbar:has(.search:focus-within) .navbar__name,
-  .navbar:has(.search__results:not([hidden])) .navbar__name {
+  .navbar:has(.search__results:not([hidden])) .navbar__name,
+  .navbar:has(.search:focus-within) .navbar__mark,
+  .navbar:has(.search__results:not([hidden])) .navbar__mark {
     display: none;
   }
 
@@ -517,6 +582,54 @@ body {
   color: var(--ink-2);
 }
 
+/* Desktop only -- the media query turns it on. On a phone the reading
+   sentence is the entire vertical budget. */
+.ov-read__facts {
+  display: none;
+  margin: 0;
+}
+
+.fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  border-top: 1px solid var(--edge);
+}
+
+.fact dt {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.fact dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The worst reading carries its ramp colour as a chip, not as text -- the
+   light ramp is tuned to read as a translucent fill over a basemap, not as
+   13px type on a panel. */
+.fact__level {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fact__level::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  border: 1px solid var(--level-colour);
+  background: color-mix(in srgb, var(--level-colour) 45%, transparent);
+  flex: none;
+}
+
 /*
  * "This translation is a draft."
  *
@@ -586,17 +699,24 @@ body {
  * The rail is read, not pressed, so it sits where the eye lands rather than
  * where the thumb reaches. That also frees the top-right for the controls.
  *
- * 88px wide, not the 62px the preview used. At 62px the band words had to run
- * at 10px to fit, and 10px is below the floor this project sets for a screen
- * read outdoors in glare. The rail gives up 26px of map rather than the floor.
+ * 112px wide. The preview used 62px, which forced 10px type -- below the floor
+ * this project sets for a screen read outdoors in glare. 88px cleared that
+ * floor but left "Floods in heavy rain" wrapping to three lines, which made
+ * the rail 273px tall: a third of the screen, and low enough to collide with
+ * the segment bar. At 112px the longest band label wraps to two lines, so the
+ * rail is both shorter AND easier to read. The 24px of map it costs is the
+ * cheapest thing in this trade.
  */
 .rail {
   position: absolute;
   z-index: 3;
+  /* Starts AT the midline rather than straddling it: the zoom and locate
+     controls hang above the same line, so the two meet with one gap between
+     them and read as a single right-hand column. */
   top: 50%;
-  transform: translateY(-50%);
+  transform: translateY(6px);
   right: 12px;
-  width: 88px;
+  width: 112px;
   background: var(--surface);
   border: 1px solid var(--edge);
   border-radius: 10px;
@@ -627,7 +747,7 @@ body {
   grid-template-columns: 14px 1fr;
   align-items: center;
   gap: 6px;
-  padding: 5px 2px;
+  padding: 4px 2px;
 }
 
 /* The swatch repeats the map's own texture, so the rail teaches the pattern
@@ -694,14 +814,25 @@ body {
   );
 }
 
+/* Says what the ramp is a ramp OF. Without it the rail is a column of colours
+   that only makes sense to somebody who already knows. */
+.legend__intro {
+  margin: 0 0 6px;
+  padding: 0 2px 6px;
+  border-bottom: 1px solid var(--edge);
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--ink-2);
+}
+
 .legend__text {
   font-size: 12px;
   line-height: 1.2;
   color: var(--ink-2);
 }
 
-/* The one-line meaning is still in the DOM for screen readers; the rail has no
-   room for it and the detail sheet says it properly. */
+/* The one-line meaning stays in the DOM for screen readers at every width. An
+   88px rail has no room to print it; the sidebar does, and turns it back on. */
 .legend__text span {
   position: absolute;
   width: 1px;
@@ -1595,6 +1726,48 @@ body {
     left: auto;
     right: 14px;
     width: 420px;
+  }
+
+  /* The map area is clear of chrome here -- the bar is above it and the
+     sidebar is beside it -- so the controls go back to the corner they
+     conventionally live in. */
+  .maplibregl-ctrl-top-right {
+    top: 0;
+    transform: none;
+  }
+
+  .rail {
+    transform: none;
+  }
+
+  /* The sidebar has the width the rail never had, so the one-line meaning
+     comes out of the screen-reader-only treatment and onto the screen. This
+     is what makes the legend readable rather than merely present. */
+  .legend__item {
+    grid-template-columns: 14px 1fr;
+    align-items: start;
+    padding: 7px 2px;
+  }
+
+  .legend__text span {
+    position: static;
+    display: block;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    margin-top: 2px;
+    color: var(--ink-2);
+  }
+
+  .legend__text strong {
+    display: block;
+    font-size: 13px;
+  }
+
+  .ov-read__facts {
+    display: block;
+    margin-top: 4px;
   }
 }
 

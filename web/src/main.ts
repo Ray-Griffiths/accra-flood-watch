@@ -29,7 +29,14 @@ import {
   type Bbox,
 } from "./viewport.ts";
 import { DetailSheet, type CellDetail } from "./detail.ts";
-import { stylesForView, type MapView } from "./levels.ts";
+import {
+  RISK_LEVELS,
+  isRiskLevel,
+  levelStyle,
+  stylesForView,
+  type MapView,
+  type RiskLevel,
+} from "./levels.ts";
 import {
   DEFAULT_ZOOM,
   RISK_LAYERS,
@@ -240,6 +247,13 @@ function renderRouteState(state: RouteState): void {
  * map is not currently painting is worse than no legend at all.
  */
 function renderLegend(view: MapView): void {
+  // Names the question these colours are answering. The rail used to show a
+  // ramp with no statement of what it was a ramp OF, which is readable only
+  // if you already know.
+  const intro = document.createElement("p");
+  intro.className = "legend__intro";
+  intro.textContent = t(`legend.intro.${view}`);
+
   const list = document.createElement("ul");
   list.className = "legend__list";
 
@@ -266,7 +280,53 @@ function renderLegend(view: MapView): void {
     list.append(item);
   }
 
-  elements.legend.replaceChildren(list);
+  elements.legend.replaceChildren(intro, list);
+}
+
+/**
+ * The numbers the sidebar has room for and a phone does not.
+ *
+ * Every one of these was already fetched and then dropped on the floor: the
+ * worst reading actually on screen, what neighbours are reporting right now,
+ * and the rainfall driving the score. Shown on desktop only -- see the
+ * stylesheet -- because on a phone the reading sentence is the whole budget.
+ */
+function renderFacts(): void {
+  const worst = worstLevelInView();
+  const worstEl = document.querySelector<HTMLElement>("#fact-worst");
+  if (worstEl) {
+    const style = worst ? levelStyle(worst) : null;
+    worstEl.textContent = style ? t(`level.${worst}`) || style.label : "—";
+    // Reads var(--k-...) so CSS, not JavaScript, resolves the theme -- the
+    // same rule the legend and the search badges follow.
+    worstEl.style.setProperty("--level-colour", style ? `var(${style.cssVariable})` : "transparent");
+    worstEl.classList.toggle("fact__level", Boolean(style));
+  }
+
+  const reportsEl = document.querySelector<HTMLElement>("#fact-reports");
+  if (reportsEl) {
+    reportsEl.textContent = currentReports.length > 0 ? String(currentReports.length) : t("fact.none");
+  }
+
+  // Null rainfall is a feed that failed, not a dry day. It says so rather
+  // than printing 0 mm, which would be inventing good news.
+  const rain = lastRisk?.rainfall ?? null;
+  const rain6 = document.querySelector<HTMLElement>("#fact-rain6");
+  const rain24 = document.querySelector<HTMLElement>("#fact-rain24");
+  if (rain6) rain6.textContent = rain ? `${rain.next6hMm.toFixed(1)} mm` : "—";
+  if (rain24) rain24.textContent = rain ? `${rain.next24hMm.toFixed(1)} mm` : "—";
+}
+
+/** The most serious level painted on screen, or null if nothing is drawn. */
+function worstLevelInView(): RiskLevel | null {
+  let worst: RiskLevel | null = null;
+  for (const cell of currentCells) {
+    if (!isRiskLevel(cell.level)) continue;
+    if (worst === null || RISK_LEVELS.indexOf(cell.level) > RISK_LEVELS.indexOf(worst)) {
+      worst = cell.level;
+    }
+  }
+  return worst;
 }
 
 /**
@@ -295,6 +355,7 @@ function applyViewDecision(): void {
 
   elements.viewReason.textContent = decision.reason;
   elements.viewBar.classList.toggle("view-bar--overridden", decision.overrodeChoice);
+  renderFacts();
 
   for (const option of elements.viewOptions) {
     option.setAttribute("aria-pressed", String(option.dataset["view"] === activeView));
@@ -741,6 +802,16 @@ function applyStaticText(): void {
   if (search) search.placeholder = t("search.placeholder");
 
   setText(".disclaimer strong", "disclaimer.lead");
+
+  // The fact labels carry their key in the markup rather than being listed
+  // here, so adding a fact is one edit rather than two.
+  for (const label of document.querySelectorAll<HTMLElement>("#read-facts [data-i18n]")) {
+    const key = label.dataset["i18n"];
+    if (key) label.textContent = t(key);
+  }
+
+  // Re-render anything whose VALUE is translated, not just its label.
+  renderFacts();
 }
 
 function showFatal(message: string): void {
@@ -1050,6 +1121,7 @@ async function start(): Promise<void> {
         currentReports = response.reports;
         confirmedByReports = new Set(response.confirmedCells ?? []);
         handles?.setReports(currentReports);
+        renderFacts();
         // The risk response may already have been painted, so re-apply rather
         // than wait for the next pan.
         if (currentCells.length > 0 && confirmedByReports.size > 0) {

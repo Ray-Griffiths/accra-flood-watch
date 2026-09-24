@@ -35,6 +35,7 @@ const IDS = [
   "language-select", "view-reason", "route-button", "route-prompt", "route-cancel",
   "report-button", "detail-sheet", "route-sheet", "report-sheet", "theme-toggle",
   "nav-menu", "navbar-controls", "draft-notice",
+  "read-facts", "fact-worst", "fact-reports", "fact-rain6", "fact-rain24",
 ];
 
 /** class tokens reached for by class. */
@@ -43,7 +44,7 @@ const CLASSES = [
   "view-bar", "view-toggle__option", "route-prompt__text",
   "report-button__label", "sheet__body", "sheet__close", "disclaimer",
   "rail__cap", "navbar", "navbar__name", "navbar__controls", "navbar__burger",
-  "tool__label",
+  "tool__label", "navbar__mark", "ov-read__facts",
 ];
 
 describe("shell DOM contract", () => {
@@ -178,6 +179,18 @@ describe("shell DOM contract", () => {
       "the search icon must be a <label for=\"search-input\">, not a span -- " +
         "collapsed it covers the entire field and a span cannot take focus",
     );
+  });
+
+  it("gives every reading-card fact a translatable label", () => {
+    // applyStaticText walks `#read-facts [data-i18n]` rather than a list in
+    // the TypeScript, so a fact added without the attribute silently ships
+    // whatever English happens to be in the markup, in every language.
+    const scope = scopeOf('id="read-facts"', "</dl>");
+    const terms = scope.match(/<dt\s[^>]*>/g) ?? [];
+    assert.ok(terms.length >= 4, `expected at least 4 facts, found ${terms.length}`);
+    for (const dt of terms) {
+      assert.match(dt, /data-i18n="[^"]+"/, `a fact label has no data-i18n key: ${dt}`);
+    }
   });
 
   it("keeps the disclaimer pointing at NADMO and GMet", () => {
