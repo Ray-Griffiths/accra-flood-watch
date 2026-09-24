@@ -45,6 +45,20 @@ export const RISK_LAYERS = {
 /** Labels use the basemap's own font stack; anything else renders as blank. */
 const FONT_BOLD = ["Amazon Ember Bold", "Noto Sans Bold"];
 
+/**
+ * How much of the map each edge's chrome covers.
+ *
+ * Every camera move has to be told, or a pin flown to the centre lands under
+ * the reading card and the feature looks broken rather than occluded. The
+ * numbers mirror the overlay offsets in styles.css; if those change, these do.
+ *
+ * Measured at 390x844: the reading card ends at y=139, the disclaimer starts
+ * at y=779, and the gauge rail occupies x=290 to x=378. `right` is 100 rather
+ * than the 90 the design preview used, because the rail was widened to 88px
+ * to keep its labels at 12px.
+ */
+export const MAP_PADDING = { top: 150, bottom: 130, left: 16, right: 100 } as const;
+
 // Shared with the pre-map viewport maths so the two cannot disagree.
 import { type Bbox } from "./viewport.ts";
 export type { Bbox };
@@ -153,6 +167,49 @@ export function createMap(
   map.addControl(new ScaleControl({ maxWidth: 100, unit: "metric" }), "bottom-left");
 
   return map;
+}
+
+/**
+ * Amazon Location serves a dark variant of the same style from the same
+ * endpoint. Verified against the live stack: `color-scheme=Light` is
+ * byte-identical to omitting the parameter, and `Dark` returns a genuinely
+ * different descriptor with the same 160 layers.
+ *
+ * `color-scheme` is already in the TileCachePolicy query-string whitelist in
+ * template.yaml, so the two variants get separate cache keys instead of
+ * colliding. This needs no backend or CloudFormation change.
+ */
+export function styleUrlForTheme(styleUrl: string, theme: Theme): string {
+  const separator = styleUrl.includes("?") ? "&" : "?";
+  return `${styleUrl}${separator}color-scheme=${theme === "dark" ? "Dark" : "Light"}`;
+}
+
+/**
+ * `setStyle` drops every source AND every registered image, which is why
+ * `installOverlays` has always been written to be callable twice. The camera
+ * is captured and restored explicitly: setStyle only preserves it when it
+ * judges the new style compatible, and relying on that is how a theme switch
+ * silently recentres the map.
+ */
+export function applyBasemapTheme(
+  map: MapLibreMap,
+  styleUrl: string,
+  theme: Theme,
+  reinstall: () => void,
+): void {
+  const camera = {
+    center: map.getCenter(),
+    zoom: map.getZoom(),
+    bearing: map.getBearing(),
+    pitch: map.getPitch(),
+  };
+
+  map.once("styledata", () => {
+    reinstall();
+    map.jumpTo(camera);
+  });
+
+  map.setStyle(styleUrlForTheme(styleUrl, theme));
 }
 
 /** The id of the first symbol layer, so the overlay slots in beneath labels. */
@@ -421,10 +478,12 @@ export function installOverlays(map: MapLibreMap, theme: Theme): MapHandles {
           [Math.min(...lons), Math.min(...lats)],
           [Math.max(...lons), Math.max(...lats)],
         ],
-        // Generous bottom padding: the fixed report button and the result
-        // sheet both live down there, and a route that ends underneath them
-        // has not been shown.
-        { padding: { top: 60, right: 40, bottom: 220, left: 40 }, duration: 600 },
+        // The chrome insets, with a deeper floor: the route sheet opens over
+        // the bottom of the map, and a route that ends underneath it has not
+        // been shown. The other three edges come from MAP_PADDING so the
+        // gauge rail is accounted for here too -- at the old right: 40 the
+        // end of an eastbound route sat behind it.
+        { padding: { ...MAP_PADDING, bottom: 220 }, duration: 600 },
       );
     },
     setSearchPin: (place) => {
@@ -446,11 +505,14 @@ export function installOverlays(map: MapLibreMap, theme: Theme): MapHandles {
 
       // Zoom in far enough that the risk overlay is drawn -- arriving at a
       // place with no cells painted would answer the question with a blank.
+      // `padding` replaces the hand-tuned `offset: [0, -60]` that used to lift
+      // the target above the old action bar. The offset only knew about the
+      // bottom; the insets know about the reading card and the rail as well,
+      // so a pin now lands in the band that is actually visible.
       map.flyTo({
         center: [place.longitude, place.latitude],
         zoom: Math.max(map.getZoom(), 16),
-        // Lifts the target above the fixed action bar at the bottom.
-        offset: [0, -60],
+        padding: MAP_PADDING,
         duration: 800,
       });
     },

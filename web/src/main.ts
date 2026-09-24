@@ -30,7 +30,24 @@ import {
 } from "./viewport.ts";
 import { DetailSheet, type CellDetail } from "./detail.ts";
 import { stylesForView, type MapView } from "./levels.ts";
-import { DEFAULT_ZOOM, RISK_LAYERS, createMap, installOverlays, type MapHandles } from "./map.ts";
+import {
+  DEFAULT_ZOOM,
+  RISK_LAYERS,
+  applyBasemapTheme,
+  createMap,
+  installOverlays,
+  styleUrlForTheme,
+  type DrawnRoute,
+  type MapHandles,
+} from "./map.ts";
+import {
+  nextChoice,
+  readStoredChoice,
+  resolveTheme,
+  storeChoice,
+  type Theme,
+  type ThemeChoice,
+} from "./theme.ts";
 import { ReportFlow } from "./reporting.ts";
 import { PlaceSearch } from "./search.ts";
 import { loadCommute } from "./commute.ts";
@@ -63,6 +80,7 @@ const elements = {
   tagline: document.querySelector<HTMLElement>("#tagline")!,
   status: document.querySelector<HTMLElement>("#status")!,
   legend: document.querySelector<HTMLElement>("#legend")!,
+  themeToggle: document.querySelector<HTMLButtonElement>("#theme-toggle")!,
   viewBar: document.querySelector<HTMLElement>(".view-bar")!,
   viewReason: document.querySelector<HTMLElement>("#view-reason")!,
   viewOptions: document.querySelectorAll<HTMLButtonElement>(".view-toggle__option"),
@@ -78,6 +96,18 @@ const elements = {
 let handles: MapHandles | null = null;
 let currentReports: FloodReport[] = [];
 let currentCells: RiskCell[] = [];
+/**
+ * A drawn route and a search pin, held so a theme switch can put them back.
+ * `setStyle` drops every source, and somebody who has just found a way around
+ * the water must not lose it because they changed the colours.
+ */
+let currentRoute: DrawnRoute | null = null;
+let currentPin: { longitude: number; latitude: number; title: string } | null = null;
+
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+let themeChoice: ThemeChoice = readStoredChoice(window.localStorage);
+let activeTheme: Theme = resolveTheme(themeChoice, darkQuery.matches);
+
 let refreshTimer: number | undefined;
 let pollTimer: number | undefined;
 /**
@@ -94,6 +124,20 @@ let pendingShare: [number, number] | null = null;
 let sharedSheet: DetailSheet | null = null;
 /** Cells the server says residents have confirmed since the last scoring run. */
 let confirmedByReports = new Set<string>();
+
+/** Paint the interface. The map is a separate, heavier step. */
+function applyThemeToDocument(theme: Theme): void {
+  document.documentElement.dataset["theme"] = theme;
+  elements.themeToggle.setAttribute(
+    "aria-label",
+    theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
+  );
+  // The theme-colour meta drives the browser chrome around the PWA; leaving it
+  // on the old navy is the one place a stale colour is visible outside the app.
+  document
+    .querySelector('meta[name="theme-color"]')
+    ?.setAttribute("content", theme === "dark" ? "#0a1218" : "#e6ecef");
+}
 
 /**
  * How often to re-read while the app is open and on screen.
@@ -551,7 +595,8 @@ function applyIntent(
 ): void {
   if (intent.at) {
     const [lon, lat] = intent.at;
-    handles.setSearchPin({ longitude: lon, latitude: lat, title: "Shared place" });
+    currentPin = { longitude: lon, latitude: lat, title: "Shared place" };
+    handles.setSearchPin(currentPin);
 
     // Parked rather than resolved here: the flight above changes the
     // viewport, and the cells for where it lands have not been fetched yet.
@@ -739,9 +784,14 @@ async function start(): Promise<void> {
     ? fetchRisk(openingBbox).catch((error: unknown) => error as Error)
     : Promise.resolve(new Error("No usable opening viewport."));
 
+  // Painted before the map is constructed, so the first style fetched is
+  // already the right one -- switching after load would cost a second style
+  // download on the connection this app is trying to be careful with.
+  applyThemeToDocument(activeTheme);
+
   const map = createMap(
     elements.map,
-    config.map.styleUrl,
+    styleUrlForTheme(config.map.styleUrl, activeTheme),
     config.map.key,
     envelope,
     centre,
@@ -786,10 +836,12 @@ async function start(): Promise<void> {
       if (!result || !result.found) {
         // A refused route clears the map. Leaving the previous line drawn
         // beside a "do not travel" message is how somebody follows the line.
+        currentRoute = null;
         handles?.setRoute(null);
         return;
       }
       const drawn = { coordinates: result.geometry.coordinates, origin, destination };
+      currentRoute = drawn;
       handles?.setRoute(drawn);
       handles?.frameRoute(drawn);
     },
@@ -802,6 +854,7 @@ async function start(): Promise<void> {
   // a way IN to that answer rather than a second version of it.
   const placeSearch = new PlaceSearch(elements.search, {
     onChoose: (place) => {
+      currentPin = place;
       handles?.setSearchPin(place);
 
       // Only open the sheet when there is a real reading behind it. Every
@@ -830,7 +883,10 @@ async function start(): Promise<void> {
         });
       }
     },
-    onClear: () => handles?.setSearchPin(null),
+    onClear: () => {
+      currentPin = null;
+      handles?.setSearchPin(null);
+    },
   });
 
   /**
@@ -860,9 +916,41 @@ async function start(): Promise<void> {
   paintRouteButton();
   elements.routeCancel.addEventListener("click", () => routeFlow.cancel());
 
+  const reinstallOverlays = (): void => {
+    handles = installOverlays(map, activeTheme);
+    handles.setView(activeView);
+    // Re-push everything that was on screen. `setStyle` dropped every source,
+    // and waiting for the next poll would leave the map blank for up to a
+    // minute. The route matters most: somebody who just found a way around the
+    // water must not lose it because they changed the colours.
+    handles.setRisk(currentCells);
+    handles.setReports(currentReports);
+    handles.setRoute(currentRoute);
+    handles.setSearchPin(currentPin);
+  };
+
+  const switchTheme = (theme: Theme): void => {
+    activeTheme = theme;
+    applyThemeToDocument(theme);
+    renderLegend(activeView);
+    applyBasemapTheme(map, config.map.styleUrl, theme, reinstallOverlays);
+  };
+
+  elements.themeToggle.addEventListener("click", () => {
+    themeChoice = nextChoice(activeTheme);
+    storeChoice(window.localStorage, themeChoice);
+    switchTheme(resolveTheme(themeChoice, darkQuery.matches));
+  });
+
+  // A user who has never chosen keeps following their phone, so an app left
+  // open across dusk comes with it.
+  darkQuery.addEventListener("change", (event) => {
+    if (themeChoice !== "system") return;
+    switchTheme(resolveTheme("system", event.matches));
+  });
+
   map.on("load", () => {
-    // Task 8 replaces this literal with the live theme.
-    handles = installOverlays(map, "dark");
+    handles = installOverlays(map, activeTheme);
 
     void riskPromise.then((result) => {
       if (result instanceof Error) {
