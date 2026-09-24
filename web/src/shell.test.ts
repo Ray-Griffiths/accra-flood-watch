@@ -166,6 +166,20 @@ describe("shell DOM contract", () => {
     );
   });
 
+  it("keeps the search icon a label bound to the input", () => {
+    // Collapsed, the icon IS the whole 46px field -- the input beside it is
+    // squeezed to 4px and clipped by `overflow: hidden`. As a <span> it
+    // swallowed every tap and search was simply unusable by touch on a phone.
+    // A <label for> focuses its control, which is the whole fix.
+    const scope = scopeOf('class="search__field"', "</div>");
+    assert.match(
+      scope,
+      /<label class="search__icon" for="search-input"/,
+      "the search icon must be a <label for=\"search-input\">, not a span -- " +
+        "collapsed it covers the entire field and a span cannot take focus",
+    );
+  });
+
   it("keeps the disclaimer pointing at NADMO and GMet", () => {
     // Scoped to the element, not the file: matching anywhere would still pass
     // if this text survived only in a comment. It is a safety requirement.

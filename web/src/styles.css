@@ -237,27 +237,47 @@ body {
 }
 
 /*
- * The segments sit ABOVE the dock rather than beside it. Measured at 390x844:
- * the three toggles come to 247px and the dock to 141px, which is 388px of
- * content for 366px of room -- they overlapped by 22px on the first real
- * render. The dock keeps the lower band because it is the half of this pair
- * that gets pressed, under time pressure, with a wet thumb.
+ * The segments and the dock are one block at the bottom of the screen: two
+ * equal buttons in a row, and the three view toggles directly above them
+ * spanning exactly the same width. Both stretch edge to edge between the 12px
+ * margins, so the column of thumb targets has one left edge and one right edge
+ * rather than four.
  *
- * 113px is the dock's own height plus a 12px gap.
+ * 58px is the dock's own height plus an 11px gap.
  */
 .ov-seg {
   left: 12px;
-  bottom: calc(var(--legal-reserve) + 113px);
+  right: 12px;
+  bottom: calc(var(--legal-reserve) + 58px);
   display: flex;
 }
 
 .ov-dock {
+  left: 12px;
   right: 12px;
   bottom: var(--legal-reserve);
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
-  align-items: flex-end;
+  align-items: stretch;
+}
+
+/* Equal halves. Neither action is the junior one: reporting is the thing only
+   this person can do, routing is the thing they came for. */
+.ov-dock .btn {
+  flex: 1;
+  justify-content: center;
+}
+
+/* The toggle group spans the dock beneath it, and the three segments split it
+   evenly -- "When it rains" is the longest at ~89px and clears a 122px third. */
+.ov-seg .view-toggle {
+  width: 100%;
+}
+
+.ov-seg .seg {
+  flex: 1;
+  text-align: center;
 }
 
 .ov-legal {
@@ -329,23 +349,32 @@ body {
  * of the input, and collapsing the bar at that moment moves the list out from
  * under a descending thumb.
  */
-.navbar:has(.search:focus-within) .navbar__name,
-.navbar:has(.search__results:not([hidden])) .navbar__name {
-  display: none;
-}
+/*
+ * Scoped to phone widths. Unscoped, these fired on a 1440px desktop too: the
+ * field took `flex: 1` of a 1440px bar and stretched right across the window
+ * for a search box, which is absurd at that size and was reported as a bug.
+ * On desktop the bar has room for everything at once, so nothing has to give
+ * way and the field keeps a fixed, sane width.
+ */
+@media (max-width: 899px) {
+  .navbar:has(.search:focus-within) .navbar__name,
+  .navbar:has(.search__results:not([hidden])) .navbar__name {
+    display: none;
+  }
 
-/* Hidden, not merely covered. A control that is off screen must not still be
-   reachable by Tab. */
-.navbar:has(.search:focus-within) .navbar__controls,
-.navbar:has(.search__results:not([hidden])) .navbar__controls,
-.navbar:has(.search:focus-within) .tool.navbar__burger,
-.navbar:has(.search__results:not([hidden])) .tool.navbar__burger {
-  display: none;
-}
+  /* Hidden, not merely covered. A control that is off screen must not still be
+     reachable by Tab. */
+  .navbar:has(.search:focus-within) .navbar__controls,
+  .navbar:has(.search__results:not([hidden])) .navbar__controls,
+  .navbar:has(.search:focus-within) .tool.navbar__burger,
+  .navbar:has(.search__results:not([hidden])) .tool.navbar__burger {
+    display: none;
+  }
 
-.navbar:has(.search:focus-within) .search,
-.navbar:has(.search__results:not([hidden])) .search {
-  flex: 1;
+  .navbar:has(.search:focus-within) .search,
+  .navbar:has(.search__results:not([hidden])) .search {
+    flex: 1;
+  }
 }
 
 /* ---------------------------------------------------------- navbar: narrow */
@@ -1463,23 +1492,26 @@ body {
    Deliberately one breakpoint and no more -- the phone is the case that
    matters. */
 @media (min-width: 900px) {
+  /*
+   * A flex column, not a grid.
+   *
+   * The grid packed its rows at the top and left ~270px of dead space under
+   * the sidebar, with the disclaimer -- the one line that may never be missed
+   * -- floating in the middle of it. A column lets `margin-top: auto` on the
+   * legal push it to the foot, which is where a footer belongs and where the
+   * eye looks for it.
+   */
   .stage {
-    display: grid;
-    grid-template-columns: 344px 1fr;
-    /* Pack the sidebar at the top. Without this the auto rows share the
-       leftover height between them and the cards drift apart down a 900px
-       window. */
-    align-content: start;
-    row-gap: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
   }
 
   /*
-   * The map stays absolutely positioned rather than becoming a grid item.
-   * `grid-column: 2; grid-row: 1 / -1` looks like the obvious way to make it
-   * span the sidebar, and it does not work: `-1` counts only EXPLICIT row
-   * tracks, and this grid declares none, so the map spanned row one and
-   * rendered 151px tall beside a 730px sidebar. An absolutely positioned
-   * child is not a grid item at all, so there is no row to be trapped in.
+   * The map stays absolutely positioned rather than joining the flow. As a
+   * grid item it was trapped in row one and rendered 151px tall; as a flex
+   * item it would sit under the sidebar. Out of flow it simply fills the
+   * window to the right of the column, below the bar.
    */
   .map {
     inset: var(--nav-h) 0 0 344px;
@@ -1489,43 +1521,65 @@ body {
   .rail {
     position: static;
     transform: none;
-    grid-column: 1;
-    width: auto;
+    width: 300px;
+    margin-inline: 22px;
     box-shadow: none;
   }
 
-  /* Re-asserted AFTER the rule above, which would otherwise drop the bar into
-     the sidebar column as a grid item. It spans the full width at every size:
-     it is the app's title bar, not part of the sidebar. */
+  /* Re-asserted AFTER the rule above, which would otherwise size the bar to
+     the sidebar column. It spans the window at every width: it is the app's
+     title bar, not part of the sidebar. */
   .ov-nav {
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
+    width: auto;
+    margin: 0;
     box-shadow: var(--lift);
-  }
-
-  /* `margin-inline`, not `margin: 0 22px` -- the shorthand would reset the
-     top and bottom margins that give the column its ends, and it sits above
-     them in source order.
-     `:not(.ov-nav)` because the bar is not part of the sidebar: it spans the
-     window, and this margin inset it by 22px at each end. */
-  .stage > .ov:not(.ov-nav),
-  .stage > .rail {
-    grid-column: 1;
-    margin-inline: 22px;
   }
 
   /* Clears the bar. Deliberately a margin and NOT `padding-top` on .stage:
      absolutely positioned children resolve against their containing block's
-     PADDING box, so padding the stage would push the navbar down along with
-     everything else. */
+     PADDING box, so padding the stage would push the navbar and the map down
+     along with everything else. */
   .ov-read {
     margin-top: calc(var(--nav-h) + 18px);
   }
 
-  /* The bar has room for everything inline, so the sidebar never holds the
-     controls and the hamburger stays away. */
+  /* Stacked, not side by side. Two buttons in a 300px column come to 146px
+     each, which "Report water" does not clear at 14px bold with its icon.
+     Full width keeps them the same size as each other, which is the point. */
+  .ov-dock {
+    position: static;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .ov-dock .btn {
+    width: 100%;
+  }
+
+  /* The slack is taken HERE, above the segments, so the whole control
+     cluster -- toggles, dock, disclaimer -- sits at the foot of the column
+     in the same order it sits at the foot of a phone screen. Putting the
+     auto margin on the legal alone left a 270px hole directly above the one
+     line that may never be missed, which is the worst place to put a hole. */
+  .ov-seg {
+    margin-top: auto;
+  }
+
+  .ov-legal {
+    margin-bottom: 18px;
+  }
+
+  /* The bar has room for everything inline, so the field neither expands nor
+     displaces anything -- it just sits there at a readable width. */
+  .search {
+    width: 260px;
+    flex: none;
+  }
+
   .search__field,
   .search__field:focus-within {
     width: 100%;
@@ -1535,8 +1589,12 @@ body {
     opacity: 1;
   }
 
-  .ov-legal {
-    margin-bottom: 18px;
+  /* Anchored under the field rather than spanning the bar: a results list the
+     width of a 1440px window is a list nobody can scan. */
+  .search__results {
+    left: auto;
+    right: 14px;
+    width: 420px;
   }
 }
 

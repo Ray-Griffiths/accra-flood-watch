@@ -44,7 +44,12 @@
           <form id="search" class="search" role="search" autocomplete="off">
             <label class="search__label" for="search-input">Search for a place</label>
             <div class="search__field">
-              <span class="search__icon" aria-hidden="true">⌕</span>
+              <!-- A LABEL, not a span. Collapsed, this icon is the whole 46px
+                   of the field: the input beside it is squeezed to 4px and
+                   clipped, so a tap landed on a span and nothing happened --
+                   search was unusable by touch. A label focuses its control,
+                   which is the behaviour this needs, with no JS. -->
+              <label class="search__icon" for="search-input" aria-hidden="true">⌕</label>
               <input
                 id="search-input"
                 class="search__input"

@@ -223,3 +223,49 @@ Three things that only showed up in a real browser:
   `t("language.draft")` string, because the actionable half of it is "warnings
   are most reliable in English". It takes the reading card to 249px in a draft
   locale, which was measured against the rail at 329px and leaves 80px clear.
+
+---
+
+## Amendment, same day: bottom cluster, and two search bugs
+
+### Search was unusable by touch
+
+Collapsed, `.search__field` is 46px and `.search__icon` occupies all 46px of
+it; the input beside it is squeezed to **4px** and clipped by
+`overflow: hidden`. A tap therefore landed on a `<span>`, which cannot take
+focus, so the field never expanded. Measured with `elementFromPoint` at the
+centre of the field: the hit target was `SPAN.search__icon`.
+
+This had been true since the overlay-geometry task. Every check until now
+focused the input programmatically, which is precisely the one way a user
+cannot. The icon is now a `<label for="search-input">` — a label focuses its
+control, no JS — and `shell.test.ts` fails if it reverts to a span.
+
+### Search stretched across the desktop
+
+`.navbar:has(.search:focus-within) .search { flex: 1 }` and the rules hiding
+the name and controls were unscoped, so on a 1440px window focusing the field
+stretched it across the whole bar. They now live in `@media (max-width: 899px)`.
+Above that the bar has room for everything at once, so nothing has to give way:
+the field is a fixed 260px, and the results panel is 420px anchored under it
+rather than spanning the window.
+
+### The bottom cluster
+
+On phones the dock is a **row** of two equal halves (179px each at 390px), with
+the three view toggles directly above it spanning the same 366px in equal
+thirds. One left edge and one right edge for the whole cluster instead of four.
+`.ov-seg`'s offset is `calc(var(--legal-reserve) + 58px)` — the dock's height
+plus a gap.
+
+On desktop the sidebar became a **flex column** rather than a grid. The grid
+packed its rows at the top and left ~270px of dead space beneath, so
+`margin-top: auto` on `.ov-seg` now takes the slack and pushes the toggles, the
+dock and the disclaimer to the foot of the column — the same order they appear
+in at the bottom of a phone. The dock stacks there rather than sitting side by
+side: two buttons in a 300px column are 146px each, which "Report water" does
+not clear at 14px bold with its icon. Both are full width, so they are the same
+size as each other, which was the point.
+
+Measured at 1440×900: reading card 74–225, rail 239–368, toggles 635–671, dock
+685–787, disclaimer 801–882 with an 18px foot.
